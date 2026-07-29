@@ -89,14 +89,14 @@ def get_emails_from_label(label_name="yt") -> list[dict]:
     return tasks
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
-    """Загружает видео напрямую с YouTube с эмуляцией мобильного приложения (Android/iOS)"""
+    """Загружает видео напрямую с YouTube, эмулируя TV/Embedded клиент"""
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
     cmd = [
         "yt-dlp",
         "--no-warnings",
         "--format", "b[ext=mp4]/best[ext=mp4]/best",
-        "--extractor-args", "youtube:player_client=android,ios",
+        "--extractor-args", "youtube:player_client=tv_embedded,web_embedded,ios",
         "-o", output_filename,
         video_url
     ]
@@ -149,7 +149,7 @@ def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
             fields='id',
         ).execute()
 
-        # Возвращаем прямую ссылку
+        # Возвращаем прямую ссылку на автоскачивание
         return f"https://drive.google.com/uc?export=download&id={file_id}"
 
     except Exception as e:
