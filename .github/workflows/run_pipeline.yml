@@ -1,18 +1,46 @@
-- name: Install and Start Cloudflare WARP
+name: YouTube to GDrive Pipeline
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [trigger_pipeline]
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
         run: |
-          # Добавляем репозиторий Cloudflare
+          python -m pip install --upgrade pip
+          pip install --upgrade -r requirements.txt
+          pip install --upgrade yt-dlp
+
+      - name: Install and Start Cloudflare WARP
+        run: |
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-
-          # Устанавливаем warp-cli
           sudo apt-get update && sudo apt-get install -y cloudflare-warp
-
-          # Регистрируем и подключаем клиент
+          
           warp-cli --accept-tos registration new
           warp-cli --accept-tos mode warp
           warp-cli --accept-tos connect
-
-          # Ждем поднятия туннеля и проверяем новый IP
+          
           sleep 3
-          echo "Current IP via WARP:"
+          echo "[+] Внешний IP через WARP:"
           curl -s https://cloudflare.com/cdn-cgi/trace | grep ip
+
+      - name: Run downloader script
+        env:
+          EMAIL_ACCOUNT: ${{ secrets.EMAIL_ACCOUNT }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_SERVICE_KEY: ${{ secrets.GDRIVE_SERVICE_KEY }}
+        run: python main.py
