@@ -21,13 +21,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
-          pip install --upgrade yt-dlp
 
       - name: Run downloader script
         env:
           EMAIL_ACCOUNT: ${{ secrets.EMAIL_ACCOUNT }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          GDRIVE_SERVICE_KEY: ${{ secrets.GDRIVE_SERVIC
-          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}E_KEY }}
+          GDRIVE_SERVICE_KEY: ${{ secrets.GDRIVE_SERVICE_KEY }}
+          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
         run: python main.py
