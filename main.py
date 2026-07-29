@@ -6,7 +6,7 @@ import email
 from email.mime.text import MIMEText
 import re
 import time
-import requests
+import subprocess
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -16,7 +16,6 @@ EMAIL_USER = os.getenv("EMAIL_ACCOUNT")
 EMAIL_PASS = os.getenv("EMAIL_PASSWORD")
 FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 SERVICE_KEY_JSON = os.getenv("GDRIVE_SERVICE_KEY")
-WORKER_URL = os.getenv("CF_WORKER_URL")
 
 # Настройки SMTP для Gmail
 SMTP_SERVER = "smtp.gmail.com"
@@ -87,50 +86,26 @@ def get_emails_from_label(label_name="yt") -> list[dict]:
 
     return tasks
 
-def download_via_worker(video_url: str, output_filename="video.mp4") -> bool:
-    """Запрашивает прямую ссылку через Cloudflare Worker и скачивает поток"""
-    if not WORKER_URL:
-        print("[-] Ошибка: Переменная CF_WORKER_URL не задана в секретах GitHub!")
-        return False
+def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
+    """Загружает видео напрямую через yt-dlp, используя туннелированный трафик"""
+    print(f"[*] Скачивание через yt-dlp для: {video_url}")
+    
+    cmd = [
+        "yt-dlp",
+        "--no-warnings",
+        "--format", "b[ext=mp4]/best[ext=mp4]/best",
+        "--extractor-args", "youtube:player_client=android,ios,web_embedded",
+        "-o", output_filename,
+        video_url
+    ]
 
-    print(f"[*] Запрос к Cloudflare Worker для: {video_url}")
     try:
-        res = requests.post(
-            WORKER_URL,
-            json={"url": video_url},
-            headers={"Content-Type": "application/json"},
-            timeout=25
-        )
-
-        if res.status_code != 200:
-            print(f"[-] Worker вернул ошибку: {res.status_code} - {res.text}")
-            return False
-
-        data = res.json()
-        download_url = data.get("url")
-
-        if not download_url:
-            print(f"[-] Не удалось извлечь URL из ответа Worker: {data}")
-            return False
-
-        print("[+] Прямая ссылка на поток получена! Выкачиваем файл...")
-        headers = {
-            "User-Agent": "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X; en_US)"
-        }
-        with requests.get(download_url, stream=True, headers=headers, timeout=300) as r:
-            r.raise_for_status()
-            with open(output_filename, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=65536):
-                    if chunk:
-                        f.write(chunk)
-
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         print(f"[+] Файл успешно скачан во временную директорию: {output_filename}")
         return True
-
-    except Exception as e:
-        print(f"[-] Ошибка при скачивании через Worker: {e}")
-
-    return False
+    except subprocess.CalledProcessError as e:
+        print(f"[-] Ошибка yt-dlp: {e.stderr if e.stderr else e.stdout}")
+        return False
 
 def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
     """Загружает видео на Google Диск и генерирует прямую ссылку на автоскачивание"""
@@ -210,7 +185,7 @@ if __name__ == "__main__":
         for idx, yt_url in enumerate(links):
             temp_filename = f"video_{int(time.time())}_{idx}.mp4"
             
-            if download_via_worker(yt_url, temp_filename):
+            if download_via_ytdlp(yt_url, temp_filename):
                 direct_url = upload_to_gdrive_and_get_direct_link(temp_filename)
                 
                 if os.path.exists(temp_filename):
