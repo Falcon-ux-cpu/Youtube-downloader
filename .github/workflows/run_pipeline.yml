@@ -1,9 +1,9 @@
 name: YouTube to GDrive Pipeline
 
 on:
-  workflow_dispatch: # Позволяет запускать вручную из интерфейса GitHub
+  workflow_dispatch:
   repository_dispatch:
-    types: [trigger_pipeline] # Внешний триггер (Webhook от cron-job.org)
+    types: [trigger_pipeline]
 
 jobs:
   run-bot:
@@ -28,4 +28,5 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           GDRIVE_SERVICE_KEY: ${{ secrets.GDRIVE_SERVICE_KEY }}
+          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
         run: python main.py
