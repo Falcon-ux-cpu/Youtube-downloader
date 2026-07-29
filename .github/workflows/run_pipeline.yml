@@ -28,5 +28,6 @@ jobs:
           EMAIL_ACCOUNT: ${{ secrets.EMAIL_ACCOUNT }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          GDRIVE_SERVICE_KEY: ${{ secrets.GDRIVE_SERVICE_KEY }}
+          GDRIVE_SERVICE_KEY: ${{ secrets.GDRIVE_SERVIC
+          CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}E_KEY }}
         run: python main.py
