@@ -100,7 +100,7 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Скачивает видео в высоком качестве без отката до 360p."""
+    """Скачивает видео в высоком качестве (1080p/HD) без скатывания в 360p."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
@@ -171,9 +171,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл и формирует прямую ссылку, адаптированную для загрузки Яндекс.Диском."""
-    
-    # 1. Tmpfiles.org (ПРИОРЕТЕТ #1: Прямой канал без урезания скорости для ботов Яндекс.Диска)
+    """Загружает файл на TmpFiles с гарантированным преобразованием в /dl/."""
     print("[*] Загрузка файла на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
@@ -189,7 +187,7 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
 
-    # 2. Pixeldrain (ПРИОРЕТЕТ #2: Параметр ?download заставляет отдавать файл без HTML-заглушек)
+    # Резервный Pixeldrain с принудительным ?download
     print("[*] Загрузка файла на Pixeldrain...")
     try:
         with open(file_path, 'rb') as f:
@@ -203,23 +201,6 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
                 return direct_url
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
-
-    # 3. Gofile.io (ПРИОРЕТЕТ #3: Резервный вариант с прямой отдачей через выбранный нод)
-    print("[*] Загрузка файла на Gofile...")
-    try:
-        server_res = requests.get("https://api.gofile.io/servers", timeout=10).json()
-        if server_res.get("status") == "ok":
-            best_server = server_res["data"]["servers"][0]["name"]
-            upload_url = f"https://{best_server}.gofile.io/contents/uploadfile"
-            with open(file_path, 'rb') as f:
-                res = requests.post(upload_url, files={'file': f}, timeout=600)
-                data = res.json()
-                if data.get("status") == "ok":
-                    direct_url = data["data"]["downloadPage"]
-                    print(f"[+] Ссылка Gofile: {direct_url}")
-                    return direct_url
-    except Exception as e:
-        print(f"[-] Не удалось выгрузить на Gofile: {e}")
 
     return None
 
