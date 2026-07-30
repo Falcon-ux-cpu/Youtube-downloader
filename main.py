@@ -8,9 +8,16 @@ import time
 import subprocess
 import requests
 
-# Переменные окружения из GitHub Secrets
-EMAIL_USER = os.getenv("EMAIL_ACCOUNT")
-EMAIL_PASS = os.getenv("EMAIL_PASSWORD")
+# Почта для чтения incoming писем (IMAP)
+IMAP_USER = os.getenv("EMAIL_ACCOUNT")
+IMAP_PASS = os.getenv("EMAIL_PASSWORD")
+
+# Почта для отправки ответных писем (SMTP) — если не задана, берем IMAP аккаунт
+SMTP_USER = os.getenv("SENDER_EMAIL_ACCOUNT", IMAP_USER)
+SMTP_PASS = os.getenv("SENDER_EMAIL_PASSWORD", IMAP_PASS)
+
+# Фиксированный получатель уведомлений (опционально)
+TARGET_EMAIL = os.getenv("TARGET_NOTIFICATION_EMAIL")
 
 # Настройки SMTP для Gmail
 SMTP_SERVER = "smtp.gmail.com"
@@ -23,14 +30,14 @@ def extract_youtube_urls(text: str) -> list[str]:
 
 def get_emails_from_label(label_name="yt") -> list[dict]:
     """Проверяет непрочитанные письма в ярлыке 'yt' через IMAP."""
-    if not EMAIL_USER or not EMAIL_PASS:
+    if not IMAP_USER or not IMAP_PASS:
         print("[-] Ошибка: Переменные EMAIL_ACCOUNT или EMAIL_PASSWORD не заданы.")
         return []
 
     tasks = []
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(EMAIL_USER, EMAIL_PASS)
+        mail.login(IMAP_USER, IMAP_PASS)
         
         status, _ = mail.select(f'"{label_name}"')
         if status != 'OK':
@@ -141,7 +148,7 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Catbox: {e}")
 
-    # 2. Фолбэк на Gofile.io (если файл больше 200MB или Catbox недоступен)
+    # 2. Фолбэк на Gofile.io
     print("[*] Переключение на Gofile.io...")
     try:
         server_res = requests.get("https://api.gofile.io/servers", timeout=30).json()
@@ -165,18 +172,18 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     return None
 
 def send_reply_email(to_email: str, direct_link: str):
-    """Отправляет ответное письмо со ссылкой на файл."""
+    """Отправляет письмо с указанного SMTP-аккаунта получателю."""
     try:
         msg = MIMEText(f"Ссылка для скачивания файла:\n{direct_link}", 'plain', 'utf-8')
         msg['Subject'] = 'yt'
-        msg['From'] = EMAIL_USER
+        msg['From'] = SMTP_USER
         msg['To'] = to_email
 
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(EMAIL_USER, EMAIL_PASS)
-            server.sendmail(EMAIL_USER, [to_email], msg.as_string())
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, [to_email], msg.as_string())
             
-        print(f"[+] Ответное письмо отправлено на {to_email}")
+        print(f"[+] Письмо успешно отправлено с {SMTP_USER} на {to_email}")
     except Exception as e:
         print(f"[-] Ошибка отправки по SMTP: {e}")
 
@@ -189,10 +196,11 @@ if __name__ == "__main__":
         exit(0)
 
     for task in email_tasks:
-        recipient = task["sender"]
+        # Если задан TARGET_NOTIFICATION_EMAIL, отправляем туда, иначе — автору письма
+        recipient = TARGET_EMAIL if TARGET_EMAIL else task["sender"]
         links = task["links"]
         
-        print(f"\n[+] Обработка {len(links)} ссылок для адреса {recipient}...")
+        print(f"\n[+] Обработка {len(links)} ссылок. Получатель: {recipient}...")
 
         for idx, yt_url in enumerate(links):
             temp_filename = f"video_{int(time.time())}_{idx}.mp4"
