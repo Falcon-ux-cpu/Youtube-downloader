@@ -12,7 +12,7 @@ import requests
 IMAP_USER = os.getenv("EMAIL_ACCOUNT")
 IMAP_PASS = os.getenv("EMAIL_PASSWORD")
 
-# Почта для отправки ответных писем (SMTP) — если не задана отдельно, берем IMAP аккаунт
+# Почта для отправки ответных писем (SMTP)
 SMTP_USER = os.getenv("SENDER_EMAIL_ACCOUNT", IMAP_USER)
 SMTP_PASS = os.getenv("SENDER_EMAIL_PASSWORD", IMAP_PASS)
 
@@ -89,8 +89,8 @@ def get_emails_from_label(label_name="yt") -> list[dict]:
     return tasks
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
-    """Загружает видео через yt-dlp с ротацией IP в Cloudflare WARP при блокировке."""
-    print(f"[*] Скачивание через yt-dlp для: {video_url}")
+    """Загружает видео в качестве до 1080p с ротацией IP в Cloudflare WARP при необходимости."""
+    print(f"[*] Скачивание через yt-dlp (target max: 1080p) для: {video_url}")
     
     player_clients = [
         "ios,android",
@@ -104,7 +104,9 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
         cmd = [
             "yt-dlp",
             "--no-warnings",
-            "--format", "b[ext=mp4]/best[ext=mp4]/best",
+            # Формат: берем лучшее видео до 1080p + лучшее аудио и склеиваем в mp4
+            "--format", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+            "--merge-output-format", "mp4",
             "--extractor-args", f"youtube:player_client={client_group}",
             "-o", output_filename,
             video_url
@@ -112,7 +114,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
 
         try:
             subprocess.run(cmd, capture_output=True, text=True, check=True)
-            print(f"[+] Файл успешно скачан во временную директорию: {output_filename}")
+            print(f"[+] Файл успешно скачан в качестве 1080p/720p: {output_filename}")
             return True
         except subprocess.CalledProcessError as e:
             err_msg = e.stderr if e.stderr else e.stdout
@@ -130,9 +132,9 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
     return False
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на Catbox.moe, а при сбое — на Gofile.io (с извлечением прямой ссылки)."""
+    """Загружает файл на Catbox.moe (до 200MB), а при сбое — на Gofile.io."""
     
-    # 1. Пробуем Catbox.moe (Прямая ссылка)
+    # 1. Пробуем Catbox.moe
     print("[*] Загрузка файла на Catbox.moe...")
     try:
         with open(file_path, 'rb') as f:
@@ -148,7 +150,7 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Catbox: {e}")
 
-    # 2. Фолбэк на Gofile.io (Прямая ссылка на файл)
+    # 2. Фолбэк на Gofile.io
     print("[*] Переключение на Gofile.io...")
     try:
         server_res = requests.get("https://api.gofile.io/servers", timeout=30).json()
@@ -163,7 +165,6 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
                 
                 result = res.json()
                 if result.get("status") == "ok":
-                    # Достаем прямую ссылку на файл для Яндекс.Диска
                     files_data = result["data"].get("files", {})
                     if files_data:
                         first_file_key = list(files_data.keys())[0]
@@ -172,7 +173,6 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
                             print(f"[+] Прямая ссылка Gofile: {direct_link}")
                             return direct_link
 
-                    # Если не вышло получить прямую — возвращаем ссылку на страницу
                     download_page = result["data"]["downloadPage"]
                     print(f"[+] Выгружено на Gofile (страница): {download_page}")
                     return download_page
@@ -182,9 +182,9 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     return None
 
 def send_reply_email(to_email: str, direct_link: str):
-    """Отправляет письмо с указанного SMTP-аккаунта получателю."""
+    """Отправляет письмо со ссылкой."""
     try:
-        msg = MIMEText(f"Ссылка для скачивания файла:\n{direct_link}", 'plain', 'utf-8')
+        msg = MIMEText(f"Ссылка для скачивания файла (1080p/720p):\n{direct_link}", 'plain', 'utf-8')
         msg['Subject'] = 'yt'
         msg['From'] = SMTP_USER
         msg['To'] = to_email
