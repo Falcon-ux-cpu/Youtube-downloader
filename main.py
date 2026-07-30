@@ -161,7 +161,6 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
 
             print("[!] Ротация IP через Cloudflare WARP...")
             try:
-                # Исправленный синтаксис для новых версий warp-cli
                 subprocess.run(["warp-cli", "--accept-tos", "registration", "delete"], capture_output=True)
                 subprocess.run(["warp-cli", "--accept-tos", "registration", "new"], check=True, capture_output=True)
                 subprocess.run(["warp-cli", "--accept-tos", "connect"], check=True, capture_output=True)
@@ -172,41 +171,9 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл и возвращает 100% ПРЯМУЮ ссылку для скачивания без редиректов."""
+    """Загружает файл и формирует прямую ссылку для скачивания (Direct Download)."""
     
-    # 1. Pixeldrain (Выдаёт наибыстрейшую прямую ссылку)
-    print("[*] Загрузка файла на Pixeldrain...")
-    try:
-        with open(file_path, 'rb') as f:
-            res = requests.post("https://pixeldrain.com/api/file", files={'file': f}, timeout=600)
-            res.raise_for_status()
-            data = res.json()
-            if data.get("success"):
-                file_id = data["id"]
-                direct_url = f"https://pixeldrain.com/api/file/{file_id}"
-                print(f"[+] Прямая ссылка Pixeldrain: {direct_url}")
-                return direct_url
-    except Exception as e:
-        print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
-
-    # 2. Tmpfiles.org (Создает прямой файл-стрим)
-    print("[*] Загрузка файла на Tmpfiles.org...")
-    try:
-        with open(file_path, 'rb') as f:
-            res = requests.post("https://tmpfiles.org/api/v1/upload", files={'file': f}, timeout=600)
-            res.raise_for_status()
-            data = res.json()
-            if data.get("status") == "success":
-                url = data["data"]["url"]
-                # Превращаем просмотровую ссылку https://tmpfiles.org/12345/video.mp4 
-                # в ПРЯМУЮ скачиваемую https://tmpfiles.org/dl/12345/video.mp4
-                direct_url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                print(f"[+] Прямая ссылка Tmpfiles: {direct_url}")
-                return direct_url
-    except Exception as e:
-        print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
-
-    # 3. Catbox.moe (Резерв)
+    # 1. Catbox.moe (Прямой статический CDN - идеален для Яндекс.Диска)
     print("[*] Загрузка файла на Catbox.moe...")
     try:
         with open(file_path, 'rb') as f:
@@ -220,6 +187,38 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
                 return url
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Catbox: {e}")
+
+    # 2. Tmpfiles.org (Преобразуем ссылку в прямой скачиваемый поток /dl/)
+    print("[*] Загрузка файла на Tmpfiles.org...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.post("https://tmpfiles.org/api/v1/upload", files={'file': f}, timeout=600)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("status") == "success":
+                url = data["data"]["url"]
+                # ПРЕОБРАЗОВАНИЕ: https://tmpfiles.org/123/v.mp4 -> https://tmpfiles.org/dl/123/v.mp4
+                direct_url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                print(f"[+] Прямая ссылка Tmpfiles: {direct_url}")
+                return direct_url
+    except Exception as e:
+        print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
+
+    # 3. Pixeldrain (Принудительный параметр ?download)
+    print("[*] Загрузка файла на Pixeldrain...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.post("https://pixeldrain.com/api/file", files={'file': f}, timeout=600)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("success"):
+                file_id = data["id"]
+                # ПРЕОБРАЗОВАНИЕ: добавляем ?download для принудительной отдачи файла
+                direct_url = f"https://pixeldrain.com/api/file/{file_id}?download"
+                print(f"[+] Прямая ссылка Pixeldrain: {direct_url}")
+                return direct_url
+    except Exception as e:
+        print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
 
     return None
 
