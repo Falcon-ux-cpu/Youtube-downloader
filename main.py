@@ -100,7 +100,7 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Скачивает видео strictly в FullHD/HD без скатывания в 360p/заглушки."""
+    """Скачивает видео в высоком качестве без отката до 360p."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
@@ -171,24 +171,9 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл и формирует прямую ссылку для скачивания (Direct Download)."""
+    """Загружает файл и формирует прямую ссылку, адаптированную для загрузки Яндекс.Диском."""
     
-    # 1. Catbox.moe (Прямой статический CDN - идеален для Яндекс.Диска)
-    print("[*] Загрузка файла на Catbox.moe...")
-    try:
-        with open(file_path, 'rb') as f:
-            data = {'reqtype': 'fileupload'}
-            files = {'fileToUpload': f}
-            res = requests.post("https://catbox.moe/user/api.php", data=data, files=files, timeout=600)
-            res.raise_for_status()
-            url = res.text.strip()
-            if url.startswith("https://"):
-                print(f"[+] Прямая ссылка Catbox: {url}")
-                return url
-    except Exception as e:
-        print(f"[-] Не удалось выгрузить на Catbox: {e}")
-
-    # 2. Tmpfiles.org (Преобразуем ссылку в прямой скачиваемый поток /dl/)
+    # 1. Tmpfiles.org (ПРИОРЕТЕТ #1: Прямой канал без урезания скорости для ботов Яндекс.Диска)
     print("[*] Загрузка файла на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
@@ -204,7 +189,7 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
 
-    # 3. Pixeldrain (Принудительный параметр ?download)
+    # 2. Pixeldrain (ПРИОРЕТЕТ #2: Параметр ?download заставляет отдавать файл без HTML-заглушек)
     print("[*] Загрузка файла на Pixeldrain...")
     try:
         with open(file_path, 'rb') as f:
@@ -213,12 +198,28 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
             data = res.json()
             if data.get("success"):
                 file_id = data["id"]
-                # ПРЕОБРАЗОВАНИЕ: добавляем ?download для принудительной отдачи файла
                 direct_url = f"https://pixeldrain.com/api/file/{file_id}?download"
                 print(f"[+] Прямая ссылка Pixeldrain: {direct_url}")
                 return direct_url
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
+
+    # 3. Gofile.io (ПРИОРЕТЕТ #3: Резервный вариант с прямой отдачей через выбранный нод)
+    print("[*] Загрузка файла на Gofile...")
+    try:
+        server_res = requests.get("https://api.gofile.io/servers", timeout=10).json()
+        if server_res.get("status") == "ok":
+            best_server = server_res["data"]["servers"][0]["name"]
+            upload_url = f"https://{best_server}.gofile.io/contents/uploadfile"
+            with open(file_path, 'rb') as f:
+                res = requests.post(upload_url, files={'file': f}, timeout=600)
+                data = res.json()
+                if data.get("status") == "ok":
+                    direct_url = data["data"]["downloadPage"]
+                    print(f"[+] Ссылка Gofile: {direct_url}")
+                    return direct_url
+    except Exception as e:
+        print(f"[-] Не удалось выгрузить на Gofile: {e}")
 
     return None
 
