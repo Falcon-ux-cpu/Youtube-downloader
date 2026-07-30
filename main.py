@@ -100,57 +100,71 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Загружает видео в высоком качестве, контролируя минимальный размер файла."""
+    """Скачивает видео strictly в FullHD/HD без скатывания в 360p/заглушки."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
-    print(f"[*] Скачивание через yt-dlp (Target 1080p) для: {video_url}")
+    print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    player_clients = [
-        "android,web",
-        "web_creator,android",
-        "tv_embedded,mweb"
+    # 3 попытки: сначала дефолтный автоподбор yt-dlp, затем iOS, затем TV
+    client_strategies = [
+        None,                        # Автовыбор yt-dlp (самый свежий встроенный механизм)
+        "ios",                       # iOS клиент (редко отдает 403)
+        "tv_embedded"                # SmartTV клиент (обходит большинство бот-проверок)
     ]
 
-    for attempt, client_group in enumerate(player_clients, 1):
-        print(f"[*] Попытка {attempt}/{len(player_clients)} с клиентом [{client_group}]...")
+    for attempt, client_group in enumerate(client_strategies, 1):
+        print(f"[*] Попытка {attempt}/{len(client_strategies)} (Стратегия: {client_group or 'Auto'})...")
         
         if os.path.exists(output_filename):
-            os.remove(output_filename)
+            try:
+                os.remove(output_filename)
+            except Exception:
+                pass
 
         cmd = [
             "yt-dlp",
             "--no-warnings",
-            "-f", "bestvideo[height<=1080]+bestaudio/best[height>=720]/best",
+            "--no-part",
+            "-f", "bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio",
             "--merge-output-format", "mp4",
-            "--extractor-args", f"youtube:player_client={client_group}",
             "-o", output_filename,
             video_url
         ]
 
+        if client_group:
+            cmd.extend(["--extractor-args", f"youtube:player_client={client_group}"])
+
         try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True)
             
-            # Проверка файла на полноту (забраковываем ответы/заглушки менее 1 МБ)
+            if result.returncode != 0:
+                print(f"[-] yt-dlp вернул ошибку: {result.stderr.strip()[:200]}")
+                raise Exception("yt-dlp завершился с ненулевым кодом.")
+
             if os.path.exists(output_filename):
                 file_size_mb = os.path.getsize(output_filename) / (1024 * 1024)
-                if file_size_mb < 1.0:
-                    print(f"[-] Файл слишком мал ({file_size_mb:.2f} МБ). Похоже на ошибку или блокировку YouTube.")
+                
+                if file_size_mb < 2.0:
+                    print(f"[-] Файл слишком мал ({file_size_mb:.2f} МБ). Это не полноценное видео.")
                     os.remove(output_filename)
-                    raise Exception("Загруженный файл меньше 1 МБ (битый файл).")
+                    raise Exception("Файл меньше 2 МБ.")
 
-                print(f"[+] Файл успешно скачан ({file_size_mb:.2f} МБ): {output_filename}")
+                print(f"[+] Видео успешно скачано! Размер: {file_size_mb:.2f} МБ")
                 return True, video_title
 
         except Exception as e:
-            print(f"[-] Ошибка на попытке {attempt}: {e}")
+            print(f"[-] Сбой на попытке {attempt}: {e}")
             if os.path.exists(output_filename):
-                os.remove(output_filename)
+                try:
+                    os.remove(output_filename)
+                except Exception:
+                    pass
 
-            print("[!] Ротация IP через WARP...")
+            print("[!] Ротация IP через Cloudflare WARP...")
             try:
                 subprocess.run(["warp-cli", "--accept-tos", "registration", "new"], check=True, capture_output=True)
                 subprocess.run(["warp-cli", "--accept-tos", "connect"], check=True, capture_output=True)
-                time.sleep(3)
+                time.sleep(4)
             except Exception as warp_err:
                 print(f"[-] Ошибка WARP: {warp_err}")
 
