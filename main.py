@@ -123,32 +123,51 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
     return False
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на временно хранилище DropMeFiles без лимитов и токенов."""
-    print("[*] Загрузка файла на DropMeFiles...")
+    """Загружает файл на Catbox.moe (до 200MB), а если не вышло — на Gofile.io."""
+    
+    # 1. Пробуем Catbox.moe
+    print("[*] Загрузка файла на Catbox.moe...")
     try:
         with open(file_path, 'rb') as f:
-            files = {'files[]': f}
-            data = {'period': '2'}  # Хранение 14 дней
-            
-            res = requests.post("https://dropmefiles.com/upload", files=files, data=data, timeout=600)
+            data = {'reqtype': 'fileupload'}
+            files = {'fileToUpload': f}
+            res = requests.post("https://catbox.moe/user/api.php", data=data, files=files, timeout=300)
             res.raise_for_status()
             
-            result = res.json()
-            if result.get("success"):
-                url = f"https://dropmefiles.com/{result['id']}"
-                print(f"[+] Файл успешно выгружен: {url}")
+            url = res.text.strip()
+            if url.startswith("https://"):
+                print(f"[+] Файл успешно выгружен на Catbox: {url}")
                 return url
-            else:
-                print(f"[-] Ошибка сервиса выгрузки: {result}")
-                return None
     except Exception as e:
-        print(f"[-] Ошибка при передаче файла: {e}")
-        return None
+        print(f"[-] Не удалось выгрузить на Catbox: {e}")
+
+    # 2. Фолбэк на Gofile.io (если файл больше 200MB или Catbox недоступен)
+    print("[*] Переключение на Gofile.io...")
+    try:
+        server_res = requests.get("https://api.gofile.io/servers", timeout=30).json()
+        if server_res.get("status") == "ok":
+            server = server_res["data"]["servers"][0]["name"]
+            upload_url = f"https://{server}.gofile.io/contents/uploadfile"
+            
+            with open(file_path, 'rb') as f:
+                files = {'file': f}
+                res = requests.post(upload_url, files=files, timeout=600)
+                res.raise_for_status()
+                
+                result = res.json()
+                if result.get("status") == "ok":
+                    download_page = result["data"]["downloadPage"]
+                    print(f"[+] Файл успешно выгружен на Gofile: {download_page}")
+                    return download_page
+    except Exception as e:
+        print(f"[-] Не удалось выгрузить на Gofile: {e}")
+
+    return None
 
 def send_reply_email(to_email: str, direct_link: str):
     """Отправляет ответное письмо со ссылкой на файл."""
     try:
-        msg = MIMEText(f"Ссылка для скачивания файла (доступна 14 дней):\n{direct_link}", 'plain', 'utf-8')
+        msg = MIMEText(f"Ссылка для скачивания файла:\n{direct_link}", 'plain', 'utf-8')
         msg['Subject'] = 'yt'
         msg['From'] = EMAIL_USER
         msg['To'] = to_email
@@ -190,7 +209,6 @@ if __name__ == "__main__":
                 else:
                     print(f"[-] Не удалось обработать ссылку: {yt_url}")
             finally:
-                # Гарантированное удаление файла с раннера
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
                     print(f"[+] Временный файл {temp_filename} успешно удален из раннера GitHub.")
