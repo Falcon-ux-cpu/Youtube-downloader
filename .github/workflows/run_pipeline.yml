@@ -46,4 +46,5 @@ jobs:
           SENDER_EMAIL_ACCOUNT: ${{ secrets.SENDER_EMAIL_ACCOUNT }}
           SENDER_EMAIL_PASSWORD: ${{ secrets.SENDER_EMAIL_PASSWORD }}
           TARGET_NOTIFICATION_EMAIL: ${{ secrets.TARGET_NOTIFICATION_EMAIL }}
+          YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
         run: python main.py
