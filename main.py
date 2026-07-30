@@ -96,12 +96,13 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Скачивает видео strictly в FullHD/HD без скатывания в 360p."""
+    """Скачивает видео strictly в 1080p/HD без скатывания в 360p."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    client_strategies = [None, "ios", "tv_embedded"]
+    # tv_embedded ставим первой, так как она обходит требования авторизации ботов
+    client_strategies = ["tv_embedded", "ios", None]
 
     for attempt, client_group in enumerate(client_strategies, 1):
         print(f"[*] Попытка {attempt}/{len(client_strategies)} (Стратегия: {client_group or 'Auto'})...")
@@ -163,8 +164,23 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на Tmpfiles и получает прямую ссылку /dl/."""
-    print("[*] Загрузка файла на Tmpfiles.org...")
+    """Загружает файл на Pixeldrain с принудительным параметром прямых скачиваний ?download."""
+    print("[*] Загрузка файла на Pixeldrain...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.post("https://pixeldrain.com/api/file", files={'file': f}, timeout=600)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("success"):
+                file_id = data["id"]
+                direct_url = f"https://pixeldrain.com/api/file/{file_id}?download"
+                print(f"[+] Прямая ссылка Pixeldrain: {direct_url}")
+                return direct_url
+    except Exception as e:
+        print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
+
+    # Резервная загрузка на Tmpfiles.org
+    print("[*] Резервная загрузка на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
             res = requests.post("https://tmpfiles.org/api/v1/upload", files={'file': f}, timeout=600)
@@ -177,10 +193,11 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
                 return direct_url
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
+
     return None
 
 def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
-    """Отправляет команду Яндекс.Диску скачать файл по внешней ссылке (не расходует прямой лимит загрузки)."""
+    """Отправляет запрос Яндекс.Диску и ОЖИДАЕТ полного завершения скачивания серверами Яндекса."""
     if not YANDEX_DISK_TOKEN:
         print("[-] YANDEX_DISK_TOKEN не задан. Загрузка на Яндекс.Диск пропущена.")
         return False
@@ -189,7 +206,7 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         "Authorization": f"OAuth {YANDEX_DISK_TOKEN}"
     }
 
-    # Путь на Яндекс.Диске, куда сохранить файл
+    # Целевой путь на Яндекс.Диске
     save_path = f"disk:/Share/{video_title}.mp4"
 
     params = {
@@ -202,17 +219,38 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         res = requests.post("https://cloud-api.yandex.net/v1/disk/resources/upload", headers=headers, params=params, timeout=30)
         
         if res.status_code == 202:
-            print(f"[+] Яндекс.Диск принял задачу на скачивание! Файл сохранится в '{save_path}'")
-            return True
+            status_url = res.json().get("href")
+            print(f"[+] Яндекс.Диск принял задачу! Ожидаем завершения скачивания серверами Яндекса...")
+            
+            # Цикл отслеживания статуса (до 10 минут)
+            for _ in range(120):
+                time.sleep(5)
+                check_res = requests.get(status_url, headers=headers, timeout=10)
+                if check_res.status_code == 200:
+                    status_data = check_res.json()
+                    status = status_data.get("status")
+                    
+                    if status == "success":
+                        print(f"[+] УСПЕХ: Файл полностью сохранен на Яндекс.Диск по пути '{save_path}'!")
+                        return True
+                    elif status == "failed":
+                        print(f"[-] Ошибка: Яндекс.Диск не смог скачать файл по переданной ссылке.")
+                        return False
+                    else:
+                        print(f"[*] Скачивание Яндекс.Диском в процессе (статус: {status})...")
+            
+            print("[-] Превышено время ожидания загрузки на Яндекс.Диск.")
+            return False
         else:
             print(f"[-] Яндекс.Диск вернул ошибку ({res.status_code}): {res.text}")
             return False
+            
     except Exception as e:
         print(f"[-] Ошибка обращения к API Яндекс.Диска: {e}")
         return False
 
 def send_reply_email(to_email: str, direct_link: str, video_title: str):
-    """Уведомление по почте (опционально)."""
+    """Отправка отчета по email."""
     try:
         email_body = f"Видео '{video_title}' отправлено на скачивание в Яндекс.Диск.\nПрямая ссылка: {direct_link}"
         
@@ -249,14 +287,14 @@ if __name__ == "__main__":
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
-                    # 1. Загружаем временно на Tmpfiles для получения прямой ссылки
+                    # 1. Загружаем на Pixeldrain для получения прямой бинарной ссылки
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
-                        # 2. Передаем ссылку Яндекс.Диску (импорт по внешнему URL)
-                        yd_success = upload_url_to_yandex_disk(public_url, title)
+                        # 2. Передаем ссылку Яндекс.Диску и ждем 100% окончания загрузки
+                        upload_url_to_yandex_disk(public_url, title)
                         
-                        # 3. Отправляем отчёт на почту
+                        # 3. Отправляем уведомление по почте
                         send_reply_email(recipient, public_url, title)
                         
                         if idx < len(links) - 1:
