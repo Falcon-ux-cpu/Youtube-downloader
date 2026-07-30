@@ -36,9 +36,11 @@ jobs:
           echo "[+] Внешний IP через WARP:"
           curl -s https://cloudflare.com/cdn-cgi/trace | grep ip
 
-      - name: Run downloader script
+        - name: Run downloader script
         env:
           EMAIL_ACCOUNT: ${{ secrets.EMAIL_ACCOUNT }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
+          SENDER_EMAIL_ACCOUNT: ${{ secrets.SENDER_EMAIL_ACCOUNT }}
+          SENDER_EMAIL_PASSWORD: ${{ secrets.SENDER_EMAIL_PASSWORD }}
+          TARGET_NOTIFICATION_EMAIL: ${{ secrets.TARGET_NOTIFICATION_EMAIL }}
         run: python main.py
