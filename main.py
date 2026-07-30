@@ -190,7 +190,7 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
     }
 
     # Путь на Яндекс.Диске, куда сохранить файл
-    save_path = f"disk:/YouTube/{video_title}.mp4"
+    save_path = f"disk:/Share/{video_title}.mp4"
 
     params = {
         "url": download_url,
