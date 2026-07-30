@@ -8,18 +8,14 @@ import time
 import subprocess
 import requests
 
-# Почта для чтения входящих писем (IMAP)
+# Переменные окружения
 IMAP_USER = os.getenv("EMAIL_ACCOUNT")
 IMAP_PASS = os.getenv("EMAIL_PASSWORD")
-
-# Почта для отправки ответных писем (SMTP) — если не задана отдельно, берем IMAP аккаунт
 SMTP_USER = os.getenv("SENDER_EMAIL_ACCOUNT", IMAP_USER)
 SMTP_PASS = os.getenv("SENDER_EMAIL_PASSWORD", IMAP_PASS)
-
-# Фиксированный получатель уведомлений (опционально)
 TARGET_EMAIL = os.getenv("TARGET_NOTIFICATION_EMAIL")
+YANDEX_DISK_TOKEN = os.getenv("YANDEX_DISK_TOKEN")  # Токен Яндекс.Диска
 
-# Настройки SMTP для Gmail
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 
@@ -100,16 +96,12 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Скачивает видео в высоком качестве (1080p/HD) без скатывания в 360p."""
+    """Скачивает видео strictly в FullHD/HD без скатывания в 360p."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    client_strategies = [
-        None,                        # Автовыбор yt-dlp
-        "ios",                       # iOS клиент
-        "tv_embedded"                # SmartTV клиент
-    ]
+    client_strategies = [None, "ios", "tv_embedded"]
 
     for attempt, client_group in enumerate(client_strategies, 1):
         print(f"[*] Попытка {attempt}/{len(client_strategies)} (Стратегия: {client_group or 'Auto'})...")
@@ -171,7 +163,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на TmpFiles с гарантированным преобразованием в /dl/."""
+    """Загружает файл на Tmpfiles и получает прямую ссылку /dl/."""
     print("[*] Загрузка файла на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
@@ -180,37 +172,52 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
             data = res.json()
             if data.get("status") == "success":
                 url = data["data"]["url"]
-                # ПРЕОБРАЗОВАНИЕ: https://tmpfiles.org/123/v.mp4 -> https://tmpfiles.org/dl/123/v.mp4
                 direct_url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
                 print(f"[+] Прямая ссылка Tmpfiles: {direct_url}")
                 return direct_url
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
-
-    # Резервный Pixeldrain с принудительным ?download
-    print("[*] Загрузка файла на Pixeldrain...")
-    try:
-        with open(file_path, 'rb') as f:
-            res = requests.post("https://pixeldrain.com/api/file", files={'file': f}, timeout=600)
-            res.raise_for_status()
-            data = res.json()
-            if data.get("success"):
-                file_id = data["id"]
-                direct_url = f"https://pixeldrain.com/api/file/{file_id}?download"
-                print(f"[+] Прямая ссылка Pixeldrain: {direct_url}")
-                return direct_url
-    except Exception as e:
-        print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
-
     return None
 
-def send_reply_email(to_email: str, direct_link: str, video_title: str):
-    """Отправляет письмо формата: <ссылка> <название_видео.mp4>"""
+def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
+    """Отправляет команду Яндекс.Диску скачать файл по внешней ссылке (не расходует прямой лимит загрузки)."""
+    if not YANDEX_DISK_TOKEN:
+        print("[-] YANDEX_DISK_TOKEN не задан. Загрузка на Яндекс.Диск пропущена.")
+        return False
+
+    headers = {
+        "Authorization": f"OAuth {YANDEX_DISK_TOKEN}"
+    }
+
+    # Путь на Яндекс.Диске, куда сохранить файл
+    save_path = f"disk:/YouTube/{video_title}.mp4"
+
+    params = {
+        "url": download_url,
+        "path": save_path
+    }
+
+    print(f"[*] Отправка запроса Яндекс.Диску на фоновое скачивание по URL...")
     try:
-        email_body = f"{direct_link} {video_title}.mp4"
+        res = requests.post("https://cloud-api.yandex.net/v1/disk/resources/upload", headers=headers, params=params, timeout=30)
+        
+        if res.status_code == 202:
+            print(f"[+] Яндекс.Диск принял задачу на скачивание! Файл сохранится в '{save_path}'")
+            return True
+        else:
+            print(f"[-] Яндекс.Диск вернул ошибку ({res.status_code}): {res.text}")
+            return False
+    except Exception as e:
+        print(f"[-] Ошибка обращения к API Яндекс.Диска: {e}")
+        return False
+
+def send_reply_email(to_email: str, direct_link: str, video_title: str):
+    """Уведомление по почте (опционально)."""
+    try:
+        email_body = f"Видео '{video_title}' отправлено на скачивание в Яндекс.Диск.\nПрямая ссылка: {direct_link}"
         
         msg = MIMEText(email_body, 'plain', 'utf-8')
-        msg['Subject'] = 'yt'
+        msg['Subject'] = 'yt -> Yandex.Disk'
         msg['From'] = SMTP_USER
         msg['To'] = to_email
 
@@ -218,8 +225,7 @@ def send_reply_email(to_email: str, direct_link: str, video_title: str):
             server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(SMTP_USER, [to_email], msg.as_string())
             
-        print(f"[+] Письмо успешно отправлено с {SMTP_USER} на {to_email}")
-        print(f"[+] Текст письма: {email_body}")
+        print(f"[+] Уведомление отправлено на {to_email}")
     except Exception as e:
         print(f"[-] Ошибка отправки по SMTP: {e}")
 
@@ -243,9 +249,14 @@ if __name__ == "__main__":
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
+                    # 1. Загружаем временно на Tmpfiles для получения прямой ссылки
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
+                        # 2. Передаем ссылку Яндекс.Диску (импорт по внешнему URL)
+                        yd_success = upload_url_to_yandex_disk(public_url, title)
+                        
+                        # 3. Отправляем отчёт на почту
                         send_reply_email(recipient, public_url, title)
                         
                         if idx < len(links) - 1:
@@ -255,4 +266,4 @@ if __name__ == "__main__":
             finally:
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
-                    print(f"[+] Временный файл {temp_filename} успешно удален из раннера GitHub.")
+                    print(f"[+] Временный файл {temp_filename} удален из раннера.")
