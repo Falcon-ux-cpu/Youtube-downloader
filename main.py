@@ -88,9 +88,23 @@ def get_emails_from_label(label_name="yt") -> list[dict]:
 
     return tasks
 
-def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
-    """Загружает видео в качестве до 1080p с ротацией IP в Cloudflare WARP при необходимости."""
-    print(f"[*] Скачивание через yt-dlp (target max: 1080p) для: {video_url}")
+def get_video_title(video_url: str) -> str:
+    """Получает оригинальное название видео с YouTube."""
+    cmd = ["yt-dlp", "--get-title", "--no-warnings", video_url]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        title = res.stdout.strip()
+        # Очищаем название от опасных для файловой системы/заголовков символов
+        clean_title = re.sub(r'[\\/*?:"<>|]', "", title)
+        return clean_title if clean_title else "video"
+    except Exception:
+        return "video"
+
+def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
+    """Скачивает видео в 1080p/720p и возвращает статус вместе с названием видео."""
+    video_title = get_video_title(video_url)
+    print(f"[*] Название видео: '{video_title}'")
+    print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
     player_clients = [
         "ios,android",
@@ -104,7 +118,6 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
         cmd = [
             "yt-dlp",
             "--no-warnings",
-            # Формат: берем лучшее видео до 1080p + лучшее аудио и склеиваем в mp4
             "--format", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
             "--merge-output-format", "mp4",
             "--extractor-args", f"youtube:player_client={client_group}",
@@ -114,8 +127,8 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
 
         try:
             subprocess.run(cmd, capture_output=True, text=True, check=True)
-            print(f"[+] Файл успешно скачан в качестве 1080p/720p: {output_filename}")
-            return True
+            print(f"[+] Файл успешно скачан: {output_filename}")
+            return True, video_title
         except subprocess.CalledProcessError as e:
             err_msg = e.stderr if e.stderr else e.stdout
             print(f"[-] Ошибка на попытке {attempt}: {err_msg.strip()}")
@@ -129,12 +142,10 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
                 except Exception as warp_err:
                     print(f"[-] Не удалось ротировать WARP: {warp_err}")
 
-    return False
+    return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на Catbox.moe (до 200MB), а при сбое — на Gofile.io."""
-    
-    # 1. Пробуем Catbox.moe
+    """Загружает файл на Catbox.moe, а при сбое — на Gofile.io."""
     print("[*] Загрузка файла на Catbox.moe...")
     try:
         with open(file_path, 'rb') as f:
@@ -150,7 +161,6 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Catbox: {e}")
 
-    # 2. Фолбэк на Gofile.io
     print("[*] Переключение на Gofile.io...")
     try:
         server_res = requests.get("https://api.gofile.io/servers", timeout=30).json()
@@ -181,10 +191,12 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
 
     return None
 
-def send_reply_email(to_email: str, direct_link: str):
-    """Отправляет письмо со ссылкой."""
+def send_reply_email(to_email: str, direct_link: str, video_title: str):
+    """Отправляет письмо формата: <ссылка> <название_видео.mp4>"""
     try:
-        msg = MIMEText(f"Ссылка для скачивания файла (1080p/720p):\n{direct_link}", 'plain', 'utf-8')
+        email_body = f"{direct_link} {video_title}.mp4"
+        
+        msg = MIMEText(email_body, 'plain', 'utf-8')
         msg['Subject'] = 'yt'
         msg['From'] = SMTP_USER
         msg['To'] = to_email
@@ -194,6 +206,7 @@ def send_reply_email(to_email: str, direct_link: str):
             server.sendmail(SMTP_USER, [to_email], msg.as_string())
             
         print(f"[+] Письмо успешно отправлено с {SMTP_USER} на {to_email}")
+        print(f"[+] Текст письма: {email_body}")
     except Exception as e:
         print(f"[-] Ошибка отправки по SMTP: {e}")
 
@@ -215,11 +228,12 @@ if __name__ == "__main__":
             temp_filename = f"video_{int(time.time())}_{idx}.mp4"
             
             try:
-                if download_via_ytdlp(yt_url, temp_filename):
+                success, title = download_via_ytdlp(yt_url, temp_filename)
+                if success:
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
-                        send_reply_email(recipient, public_url)
+                        send_reply_email(recipient, public_url, title)
                         
                         if idx < len(links) - 1:
                             time.sleep(2)
