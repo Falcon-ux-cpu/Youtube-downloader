@@ -87,25 +87,46 @@ def get_emails_from_label(label_name="yt") -> list[dict]:
     return tasks
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
-    """Загружает видео через yt-dlp с использованием прокси/туннелированного трафика."""
+    """Загружает видео через yt-dlp с ротацией IP в Cloudflare WARP при блокировке."""
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    cmd = [
-        "yt-dlp",
-        "--no-warnings",
-        "--format", "b[ext=mp4]/best[ext=mp4]/best",
-        "--extractor-args", "youtube:player_client=android,ios,web_embedded",
-        "-o", output_filename,
-        video_url
+    player_clients = [
+        "ios,android",
+        "mweb,web_embedded",
+        "tv_embedded,android"
     ]
 
-    try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
-        print(f"[+] Файл успешно скачан во временную директорию: {output_filename}")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"[-] Ошибка yt-dlp: {e.stderr if e.stderr else e.stdout}")
-        return False
+    for attempt, client_group in enumerate(player_clients, 1):
+        print(f"[*] Попытка {attempt}/{len(player_clients)} с клиентом [{client_group}]...")
+        
+        cmd = [
+            "yt-dlp",
+            "--no-warnings",
+            "--format", "b[ext=mp4]/best[ext=mp4]/best",
+            "--extractor-args", f"youtube:player_client={client_group}",
+            "-o", output_filename,
+            video_url
+        ]
+
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"[+] Файл успешно скачан во временную директорию: {output_filename}")
+            return True
+        except subprocess.CalledProcessError as e:
+            err_msg = e.stderr if e.stderr else e.stdout
+            print(f"[-] Ошибка на попытке {attempt}: {err_msg.strip()}")
+            
+            # При блокировке ротируем IP узел WARP
+            if any(term in err_msg for term in ["not a bot", "429", "Sign in"]):
+                print("[!] Обнаружена защита от ботов. Ротация IP через Cloudflare WARP...")
+                try:
+                    subprocess.run(["warp-cli", "--accept-tos", "registration", "new"], check=True, capture_output=True)
+                    subprocess.run(["warp-cli", "--accept-tos", "connect"], check=True, capture_output=True)
+                    time.sleep(3)
+                except Exception as warp_err:
+                    print(f"[-] Не удалось ротировать WARP: {warp_err}")
+
+    return False
 
 def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
     """Загружает видео на Google Диск и генерирует прямую ссылку на скачивание."""
@@ -137,7 +158,6 @@ def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
 
         file_id = file.get('id')
 
-        # Открываем доступ по ссылке
         user_permission = {
             'type': 'anyone',
             'role': 'reader',
