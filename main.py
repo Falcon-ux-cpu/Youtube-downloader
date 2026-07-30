@@ -94,22 +94,22 @@ def get_video_title(video_url: str) -> str:
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=True)
         title = res.stdout.strip()
-        # Очищаем название от недопустимых символов
         clean_title = re.sub(r'[\\/*?:"<>|]', "", title)
         return clean_title if clean_title else "video"
     except Exception:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Загружает видео в качестве до 1080p (без ограничения по кодекам) с объединением через ffmpeg."""
+    """Загружает видео строго в высоком качестве (1080p / 720p)."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
-    print(f"[*] Скачивание через yt-dlp (Target: 1080p) для: {video_url}")
+    print(f"[*] Скачивание через yt-dlp (Strict HD/FullHD) для: {video_url}")
     
+    # Набор клиентов, лучше всего отдающих HD/1080p без авторизации
     player_clients = [
-        "web,android",
-        "android,web",
-        "tv_embedded,web"
+        "ios,android_vr",
+        "android_vr,web_creator",
+        "mweb,tv_embedded"
     ]
 
     for attempt, client_group in enumerate(player_clients, 1):
@@ -118,9 +118,8 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
         cmd = [
             "yt-dlp",
             "--no-warnings",
-            # Выбираем лучшее видео до 1080p (любой кодек) + лучшее аудио
-            "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-            # Перепаковываем итоговый файл в контейнер MP4
+            # Запрещаем сброс до 360p: требуем только варианты не ниже 720p / 1080p
+            "-f", "bestvideo[height<=1080]+bestaudio/best[height>=720]",
             "--merge-output-format", "mp4",
             "--extractor-args", f"youtube:player_client={client_group}",
             "-o", output_filename,
@@ -129,27 +128,24 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
 
         try:
             subprocess.run(cmd, capture_output=True, text=True, check=True)
-            print(f"[+] Файл успешно скачан в высокую четкость (1080p/720p): {output_filename}")
+            print(f"[+] Файл успешно скачан в качестве 1080p/720p: {output_filename}")
             return True, video_title
         except subprocess.CalledProcessError as e:
             err_msg = e.stderr if e.stderr else e.stdout
             print(f"[-] Ошибка на попытке {attempt}: {err_msg.strip()}")
             
-            if any(term in err_msg for term in ["not a bot", "429", "Sign in"]):
-                print("[!] Обнаружена защита от ботов. Ротация IP через Cloudflare WARP...")
-                try:
-                    subprocess.run(["warp-cli", "--accept-tos", "registration", "new"], check=True, capture_output=True)
-                    subprocess.run(["warp-cli", "--accept-tos", "connect"], check=True, capture_output=True)
-                    time.sleep(3)
-                except Exception as warp_err:
-                    print(f"[-] Не удалось ротировать WARP: {warp_err}")
+            print("[!] Ошибка скачивания или фильтрации качества. Ротация IP через WARP...")
+            try:
+                subprocess.run(["warp-cli", "--accept-tos", "registration", "new"], check=True, capture_output=True)
+                subprocess.run(["warp-cli", "--accept-tos", "connect"], check=True, capture_output=True)
+                time.sleep(3)
+            except Exception as warp_err:
+                print(f"[-] Ошибка WARP: {warp_err}")
 
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на Catbox.moe, а при сбое — на Gofile.io (с извлечением прямой ссылки)."""
-    
-    # 1. Пробуем Catbox.moe
+    """Загружает файл на Catbox.moe, а при сбое — на Gofile.io."""
     print("[*] Загрузка файла на Catbox.moe...")
     try:
         with open(file_path, 'rb') as f:
@@ -165,7 +161,6 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Catbox: {e}")
 
-    # 2. Фолбэк на Gofile.io
     print("[*] Переключение на Gofile.io...")
     try:
         server_res = requests.get("https://api.gofile.io/servers", timeout=30).json()
