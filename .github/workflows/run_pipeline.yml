@@ -1,4 +1,4 @@
-name: YouTube to GDrive Pipeline
+name: YouTube to Yandex.Disk Pipeline
 
 on:
   workflow_dispatch:
@@ -20,8 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade -r requirements.txt
-          pip install --upgrade yt-dlp
+          pip install --upgrade requests yt-dlp
 
       - name: Install and Start Cloudflare WARP
         run: |
@@ -41,6 +40,5 @@ jobs:
         env:
           EMAIL_ACCOUNT: ${{ secrets.EMAIL_ACCOUNT }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          GDRIVE_SERVICE_KEY: ${{ secrets.GDRIVE_SERVICE_KEY }}
+          YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
         run: python main.py
