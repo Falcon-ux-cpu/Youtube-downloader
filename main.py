@@ -22,12 +22,12 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 
 def extract_youtube_urls(text: str) -> list[str]:
-    """Ищет все уникальные ссылки на YouTube в тексте письма"""
+    """Ищет все уникальные ссылки на YouTube в тексте письма."""
     pattern = r"(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)[0-9A-Za-z_-]{11})"
     return list(set(re.findall(pattern, text)))
 
 def get_emails_from_label(label_name="yt") -> list[dict]:
-    """Проверяет непрочитанные письма в ярлыке 'yt' через IMAP"""
+    """Проверяет непрочитанные письма в ярлыке 'yt' через IMAP."""
     if not EMAIL_USER or not EMAIL_PASS:
         print("[-] Ошибка: Переменные EMAIL_ACCOUNT или EMAIL_PASSWORD не заданы.")
         return []
@@ -87,7 +87,7 @@ def get_emails_from_label(label_name="yt") -> list[dict]:
     return tasks
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
-    """Загружает видео напрямую через yt-dlp, используя туннелированный трафик"""
+    """Загружает видео через yt-dlp с использованием прокси/туннелированного трафика."""
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
     cmd = [
@@ -100,7 +100,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
         print(f"[+] Файл успешно скачан во временную директорию: {output_filename}")
         return True
     except subprocess.CalledProcessError as e:
@@ -108,7 +108,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
         return False
 
 def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
-    """Загружает видео на Google Диск и генерирует прямую ссылку на автоскачивание"""
+    """Загружает видео на Google Диск и генерирует прямую ссылку на скачивание."""
     if not SERVICE_KEY_JSON or not FOLDER_ID:
         print("[-] Ошибка: Отсутствуют GDRIVE_SERVICE_KEY или GDRIVE_FOLDER_ID.")
         return None
@@ -131,11 +131,13 @@ def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
         file = service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
 
         file_id = file.get('id')
 
+        # Открываем доступ по ссылке
         user_permission = {
             'type': 'anyone',
             'role': 'reader',
@@ -144,6 +146,7 @@ def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
             fileId=file_id,
             body=user_permission,
             fields='id',
+            supportsAllDrives=True
         ).execute()
 
         return f"https://drive.google.com/uc?export=download&id={file_id}"
@@ -153,7 +156,7 @@ def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
         return None
 
 def send_reply_email(to_email: str, direct_link: str):
-    """Отправляет письмо с чистой ссылкой на автоскачивание"""
+    """Отправляет ответное письмо со ссылкой на файл."""
     try:
         msg = MIMEText(direct_link, 'plain', 'utf-8')
         msg['Subject'] = 'yt'
