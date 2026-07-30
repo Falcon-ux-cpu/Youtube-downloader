@@ -11,7 +11,6 @@ import requests
 # Переменные окружения из GitHub Secrets
 EMAIL_USER = os.getenv("EMAIL_ACCOUNT")
 EMAIL_PASS = os.getenv("EMAIL_PASSWORD")
-YANDEX_TOKEN = os.getenv("YANDEX_DISK_TOKEN")
 
 # Настройки SMTP для Gmail
 SMTP_SERVER = "smtp.gmail.com"
@@ -123,62 +122,33 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
 
     return False
 
-def upload_to_yandex_disk(file_path: str) -> str | None:
-    """Загружает файл на Яндекс.Диск и возвращает публичную ссылку."""
-    if not YANDEX_TOKEN:
-        print("[-] Ошибка: Переменная YANDEX_DISK_TOKEN не задана.")
-        return None
-
-    filename = os.path.basename(file_path)
-    ya_path = f"disk:/{filename}"
-    headers = {"Authorization": f"OAuth {YANDEX_TOKEN}"}
-
+def upload_to_temporary_storage(file_path: str) -> str | None:
+    """Загружает файл на временно хранилище DropMeFiles без лимитов и токенов."""
+    print("[*] Загрузка файла на DropMeFiles...")
     try:
-        # 1. Запрашиваем одноразовую ссылку для загрузки
-        print("[*] Запрос ссылки для загрузки на Яндекс.Диск...")
-        upload_req = requests.get(
-            "https://cloud-api.yandex.net/v1/disk/resources/upload",
-            params={"path": ya_path, "overwrite": "true"},
-            headers=headers
-        )
-        upload_req.raise_for_status()
-        upload_url = upload_req.json().get("href")
-
-        # 2. Выгружаем файл напрямую
-        print("[*] Выгрузка файла на Яндекс.Диск...")
-        with open(file_path, "rb") as f:
-            put_req = requests.put(upload_url, data=f)
-            put_req.raise_for_status()
-
-        # 3. Публикуем файл (делаем доступным по ссылке)
-        print("[*] Генерация публичной ссылки...")
-        pub_req = requests.put(
-            "https://cloud-api.yandex.net/v1/disk/resources/publish",
-            params={"path": ya_path},
-            headers=headers
-        )
-        pub_req.raise_for_status()
-
-        # 4. Запрашиваем данные о созданном публичном файле
-        meta_req = requests.get(
-            "https://cloud-api.yandex.net/v1/disk/resources",
-            params={"path": ya_path},
-            headers=headers
-        )
-        meta_req.raise_for_status()
-        public_url = meta_req.json().get("public_url")
-
-        print(f"[+] Успешно! Ссылка: {public_url}")
-        return public_url
-
+        with open(file_path, 'rb') as f:
+            files = {'files[]': f}
+            data = {'period': '2'}  # Хранение 14 дней
+            
+            res = requests.post("https://dropmefiles.com/upload", files=files, data=data, timeout=600)
+            res.raise_for_status()
+            
+            result = res.json()
+            if result.get("success"):
+                url = f"https://dropmefiles.com/{result['id']}"
+                print(f"[+] Файл успешно выгружен: {url}")
+                return url
+            else:
+                print(f"[-] Ошибка сервиса выгрузки: {result}")
+                return None
     except Exception as e:
-        print(f"[-] Ошибка Яндекс.Диск API: {e}")
+        print(f"[-] Ошибка при передаче файла: {e}")
         return None
 
 def send_reply_email(to_email: str, direct_link: str):
     """Отправляет ответное письмо со ссылкой на файл."""
     try:
-        msg = MIMEText(direct_link, 'plain', 'utf-8')
+        msg = MIMEText(f"Ссылка для скачивания файла (доступна 14 дней):\n{direct_link}", 'plain', 'utf-8')
         msg['Subject'] = 'yt'
         msg['From'] = EMAIL_USER
         msg['To'] = to_email
@@ -210,7 +180,7 @@ if __name__ == "__main__":
             
             try:
                 if download_via_ytdlp(yt_url, temp_filename):
-                    public_url = upload_to_yandex_disk(temp_filename)
+                    public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
                         send_reply_email(recipient, public_url)
@@ -220,7 +190,7 @@ if __name__ == "__main__":
                 else:
                     print(f"[-] Не удалось обработать ссылку: {yt_url}")
             finally:
-                # Всегда зачищаем скачанный файл с раннера GitHub
+                # Гарантированное удаление файла с раннера
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
-                    print(f"[+] Временный файл {temp_filename} успешно удален из хранилища GitHub.")
+                    print(f"[+] Временный файл {temp_filename} успешно удален из раннера GitHub.")
