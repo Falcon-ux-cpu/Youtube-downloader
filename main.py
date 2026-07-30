@@ -1,5 +1,4 @@
 import os
-import json
 import imaplib
 import smtplib
 import email
@@ -7,15 +6,12 @@ from email.mime.text import MIMEText
 import re
 import time
 import subprocess
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+import requests
 
 # Переменные окружения из GitHub Secrets
 EMAIL_USER = os.getenv("EMAIL_ACCOUNT")
 EMAIL_PASS = os.getenv("EMAIL_PASSWORD")
-FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
-SERVICE_KEY_JSON = os.getenv("GDRIVE_SERVICE_KEY")
+YANDEX_TOKEN = os.getenv("YANDEX_DISK_TOKEN")
 
 # Настройки SMTP для Gmail
 SMTP_SERVER = "smtp.gmail.com"
@@ -127,72 +123,56 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
 
     return False
 
-def upload_to_gdrive_and_get_direct_link(file_path: str, owner_email: str) -> str | None:
-    """
-    Загружает видео на Google Диск, передаёт владение на основной аккаунт 
-    и генерирует прямую ссылку на скачивание.
-    """
-    if not SERVICE_KEY_JSON or not FOLDER_ID:
-        print("[-] Ошибка: Отсутствуют GDRIVE_SERVICE_KEY или GDRIVE_FOLDER_ID.")
+def upload_to_yandex_disk(file_path: str) -> str | None:
+    """Загружает файл на Яндекс.Диск и возвращает публичную ссылку."""
+    if not YANDEX_TOKEN:
+        print("[-] Ошибка: Переменная YANDEX_DISK_TOKEN не задана.")
         return None
 
+    filename = os.path.basename(file_path)
+    ya_path = f"disk:/{filename}"
+    headers = {"Authorization": f"OAuth {YANDEX_TOKEN}"}
+
     try:
-        key_dict = json.loads(SERVICE_KEY_JSON)
-        creds = service_account.Credentials.from_service_account_info(
-            key_dict, scopes=['https://www.googleapis.com/auth/drive']
+        # 1. Запрашиваем одноразовую ссылку для загрузки
+        print("[*] Запрос ссылки для загрузки на Яндекс.Диск...")
+        upload_req = requests.get(
+            "https://cloud-api.yandex.net/v1/disk/resources/upload",
+            params={"path": ya_path, "overwrite": "true"},
+            headers=headers
         )
-        
-        service = build('drive', 'v3', credentials=creds)
+        upload_req.raise_for_status()
+        upload_url = upload_req.json().get("href")
 
-        file_metadata = {
-            'name': os.path.basename(file_path),
-            'parents': [FOLDER_ID]
-        }
-        media = MediaFileUpload(file_path, resumable=True)
+        # 2. Выгружаем файл напрямую
+        print("[*] Выгрузка файла на Яндекс.Диск...")
+        with open(file_path, "rb") as f:
+            put_req = requests.put(upload_url, data=f)
+            put_req.raise_for_status()
 
-        print("[*] Загрузка файла на Google Диск...")
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id',
-            supportsAllDrives=True
-        ).execute()
+        # 3. Публикуем файл (делаем доступным по ссылке)
+        print("[*] Генерация публичной ссылки...")
+        pub_req = requests.put(
+            "https://cloud-api.yandex.net/v1/disk/resources/publish",
+            params={"path": ya_path},
+            headers=headers
+        )
+        pub_req.raise_for_status()
 
-        file_id = file.get('id')
+        # 4. Запрашиваем данные о созданном публичном файле
+        meta_req = requests.get(
+            "https://cloud-api.yandex.net/v1/disk/resources",
+            params={"path": ya_path},
+            headers=headers
+        )
+        meta_req.raise_for_status()
+        public_url = meta_req.json().get("public_url")
 
-        # 1. Открываем публичный доступ на чтение по ссылке
-        user_permission = {
-            'type': 'anyone',
-            'role': 'reader',
-        }
-        service.permissions().create(
-            fileId=file_id,
-            body=user_permission,
-            fields='id',
-            supportsAllDrives=True
-        ).execute()
-
-        # 2. Передаем владение файлом твоему личного аккаунту (списывает квоту с тебя)
-        if owner_email:
-            try:
-                owner_permission = {
-                    'type': 'user',
-                    'role': 'owner',
-                    'emailAddress': owner_email
-                }
-                service.permissions().create(
-                    fileId=file_id,
-                    body=owner_permission,
-                    transferOwnership=True,
-                    supportsAllDrives=True
-                ).execute()
-            except Exception as transfer_err:
-                print(f"[!] Предупреждение при передаче прав владельца: {transfer_err}")
-
-        return f"https://drive.google.com/uc?export=download&id={file_id}"
+        print(f"[+] Успешно! Ссылка: {public_url}")
+        return public_url
 
     except Exception as e:
-        print(f"[-] Ошибка Google Drive API: {e}")
+        print(f"[-] Ошибка Яндекс.Диск API: {e}")
         return None
 
 def send_reply_email(to_email: str, direct_link: str):
@@ -228,16 +208,19 @@ if __name__ == "__main__":
         for idx, yt_url in enumerate(links):
             temp_filename = f"video_{int(time.time())}_{idx}.mp4"
             
-            if download_via_ytdlp(yt_url, temp_filename):
-                direct_url = upload_to_gdrive_and_get_direct_link(temp_filename, owner_email=EMAIL_USER)
-                
+            try:
+                if download_via_ytdlp(yt_url, temp_filename):
+                    public_url = upload_to_yandex_disk(temp_filename)
+                    
+                    if public_url:
+                        send_reply_email(recipient, public_url)
+                        
+                        if idx < len(links) - 1:
+                            time.sleep(2)
+                else:
+                    print(f"[-] Не удалось обработать ссылку: {yt_url}")
+            finally:
+                # Всегда зачищаем скачанный файл с раннера GitHub
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
-
-                if direct_url:
-                    send_reply_email(recipient, direct_url)
-                    
-                    if idx < len(links) - 1:
-                        time.sleep(2)
-            else:
-                print(f"[-] Не удалось обработать ссылку: {yt_url}")
+                    print(f"[+] Временный файл {temp_filename} успешно удален из хранилища GitHub.")
