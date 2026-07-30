@@ -36,7 +36,7 @@ jobs:
           echo "[+] Внешний IP через WARP:"
           curl -s https://cloudflare.com/cdn-cgi/trace | grep ip
 
-        - name: Run downloader script
+      - name: Run downloader script
         env:
           EMAIL_ACCOUNT: ${{ secrets.EMAIL_ACCOUNT }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
