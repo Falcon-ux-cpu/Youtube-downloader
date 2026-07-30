@@ -116,7 +116,6 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
             err_msg = e.stderr if e.stderr else e.stdout
             print(f"[-] Ошибка на попытке {attempt}: {err_msg.strip()}")
             
-            # При блокировке ротируем IP узел WARP
             if any(term in err_msg for term in ["not a bot", "429", "Sign in"]):
                 print("[!] Обнаружена защита от ботов. Ротация IP через Cloudflare WARP...")
                 try:
@@ -128,8 +127,11 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
 
     return False
 
-def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
-    """Загружает видео на Google Диск и генерирует прямую ссылку на скачивание."""
+def upload_to_gdrive_and_get_direct_link(file_path: str, owner_email: str) -> str | None:
+    """
+    Загружает видео на Google Диск, передаёт владение на основной аккаунт 
+    и генерирует прямую ссылку на скачивание.
+    """
     if not SERVICE_KEY_JSON or not FOLDER_ID:
         print("[-] Ошибка: Отсутствуют GDRIVE_SERVICE_KEY или GDRIVE_FOLDER_ID.")
         return None
@@ -158,6 +160,7 @@ def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
 
         file_id = file.get('id')
 
+        # 1. Открываем публичный доступ на чтение по ссылке
         user_permission = {
             'type': 'anyone',
             'role': 'reader',
@@ -168,6 +171,23 @@ def upload_to_gdrive_and_get_direct_link(file_path: str) -> str | None:
             fields='id',
             supportsAllDrives=True
         ).execute()
+
+        # 2. Передаем владение файлом твоему личного аккаунту (списывает квоту с тебя)
+        if owner_email:
+            try:
+                owner_permission = {
+                    'type': 'user',
+                    'role': 'owner',
+                    'emailAddress': owner_email
+                }
+                service.permissions().create(
+                    fileId=file_id,
+                    body=owner_permission,
+                    transferOwnership=True,
+                    supportsAllDrives=True
+                ).execute()
+            except Exception as transfer_err:
+                print(f"[!] Предупреждение при передаче прав владельца: {transfer_err}")
 
         return f"https://drive.google.com/uc?export=download&id={file_id}"
 
@@ -209,7 +229,7 @@ if __name__ == "__main__":
             temp_filename = f"video_{int(time.time())}_{idx}.mp4"
             
             if download_via_ytdlp(yt_url, temp_filename):
-                direct_url = upload_to_gdrive_and_get_direct_link(temp_filename)
+                direct_url = upload_to_gdrive_and_get_direct_link(temp_filename, owner_email=EMAIL_USER)
                 
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
