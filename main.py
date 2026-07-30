@@ -100,26 +100,27 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Загружает видео строго в высоком качестве (1080p / 720p)."""
+    """Загружает видео в высоком качестве, контролируя минимальный размер файла."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
-    print(f"[*] Скачивание через yt-dlp (Strict HD/FullHD) для: {video_url}")
+    print(f"[*] Скачивание через yt-dlp (Target 1080p) для: {video_url}")
     
-    # Набор клиентов, лучше всего отдающих HD/1080p без авторизации
     player_clients = [
-        "ios,android_vr",
-        "android_vr,web_creator",
-        "mweb,tv_embedded"
+        "android,web",
+        "web_creator,android",
+        "tv_embedded,mweb"
     ]
 
     for attempt, client_group in enumerate(player_clients, 1):
         print(f"[*] Попытка {attempt}/{len(player_clients)} с клиентом [{client_group}]...")
         
+        if os.path.exists(output_filename):
+            os.remove(output_filename)
+
         cmd = [
             "yt-dlp",
             "--no-warnings",
-            # Запрещаем сброс до 360p: требуем только варианты не ниже 720p / 1080p
-            "-f", "bestvideo[height<=1080]+bestaudio/best[height>=720]",
+            "-f", "bestvideo[height<=1080]+bestaudio/best[height>=720]/best",
             "--merge-output-format", "mp4",
             "--extractor-args", f"youtube:player_client={client_group}",
             "-o", output_filename,
@@ -128,13 +129,24 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
 
         try:
             subprocess.run(cmd, capture_output=True, text=True, check=True)
-            print(f"[+] Файл успешно скачан в качестве 1080p/720p: {output_filename}")
-            return True, video_title
-        except subprocess.CalledProcessError as e:
-            err_msg = e.stderr if e.stderr else e.stdout
-            print(f"[-] Ошибка на попытке {attempt}: {err_msg.strip()}")
             
-            print("[!] Ошибка скачивания или фильтрации качества. Ротация IP через WARP...")
+            # Проверка файла на полноту (забраковываем ответы/заглушки менее 1 МБ)
+            if os.path.exists(output_filename):
+                file_size_mb = os.path.getsize(output_filename) / (1024 * 1024)
+                if file_size_mb < 1.0:
+                    print(f"[-] Файл слишком мал ({file_size_mb:.2f} МБ). Похоже на ошибку или блокировку YouTube.")
+                    os.remove(output_filename)
+                    raise Exception("Загруженный файл меньше 1 МБ (битый файл).")
+
+                print(f"[+] Файл успешно скачан ({file_size_mb:.2f} МБ): {output_filename}")
+                return True, video_title
+
+        except Exception as e:
+            print(f"[-] Ошибка на попытке {attempt}: {e}")
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
+
+            print("[!] Ротация IP через WARP...")
             try:
                 subprocess.run(["warp-cli", "--accept-tos", "registration", "new"], check=True, capture_output=True)
                 subprocess.run(["warp-cli", "--accept-tos", "connect"], check=True, capture_output=True)
