@@ -105,11 +105,10 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    # 3 попытки: сначала дефолтный автоподбор yt-dlp, затем iOS, затем TV
     client_strategies = [
-        None,                        # Автовыбор yt-dlp (самый свежий встроенный механизм)
-        "ios",                       # iOS клиент (редко отдает 403)
-        "tv_embedded"                # SmartTV клиент (обходит большинство бот-проверок)
+        None,                        # Автовыбор yt-dlp
+        "ios",                       # iOS клиент
+        "tv_embedded"                # SmartTV клиент
     ]
 
     for attempt, client_group in enumerate(client_strategies, 1):
@@ -162,58 +161,65 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
 
             print("[!] Ротация IP через Cloudflare WARP...")
             try:
+                # Исправленный синтаксис для новых версий warp-cli
+                subprocess.run(["warp-cli", "--accept-tos", "registration", "delete"], capture_output=True)
                 subprocess.run(["warp-cli", "--accept-tos", "registration", "new"], check=True, capture_output=True)
                 subprocess.run(["warp-cli", "--accept-tos", "connect"], check=True, capture_output=True)
-                time.sleep(4)
+                time.sleep(3)
             except Exception as warp_err:
                 print(f"[-] Ошибка WARP: {warp_err}")
 
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на Catbox.moe, а при сбое — на Gofile.io."""
+    """Загружает файл и возвращает 100% ПРЯМУЮ ссылку для скачивания без редиректов."""
+    
+    # 1. Pixeldrain (Выдаёт наибыстрейшую прямую ссылку)
+    print("[*] Загрузка файла на Pixeldrain...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.post("https://pixeldrain.com/api/file", files={'file': f}, timeout=600)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("success"):
+                file_id = data["id"]
+                direct_url = f"https://pixeldrain.com/api/file/{file_id}"
+                print(f"[+] Прямая ссылка Pixeldrain: {direct_url}")
+                return direct_url
+    except Exception as e:
+        print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
+
+    # 2. Tmpfiles.org (Создает прямой файл-стрим)
+    print("[*] Загрузка файла на Tmpfiles.org...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.post("https://tmpfiles.org/api/v1/upload", files={'file': f}, timeout=600)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("status") == "success":
+                url = data["data"]["url"]
+                # Превращаем просмотровую ссылку https://tmpfiles.org/12345/video.mp4 
+                # в ПРЯМУЮ скачиваемую https://tmpfiles.org/dl/12345/video.mp4
+                direct_url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                print(f"[+] Прямая ссылка Tmpfiles: {direct_url}")
+                return direct_url
+    except Exception as e:
+        print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
+
+    # 3. Catbox.moe (Резерв)
     print("[*] Загрузка файла на Catbox.moe...")
     try:
         with open(file_path, 'rb') as f:
             data = {'reqtype': 'fileupload'}
             files = {'fileToUpload': f}
-            res = requests.post("https://catbox.moe/user/api.php", data=data, files=files, timeout=300)
+            res = requests.post("https://catbox.moe/user/api.php", data=data, files=files, timeout=600)
             res.raise_for_status()
-            
             url = res.text.strip()
             if url.startswith("https://"):
-                print(f"[+] Файл успешно выгружен на Catbox: {url}")
+                print(f"[+] Прямая ссылка Catbox: {url}")
                 return url
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Catbox: {e}")
-
-    print("[*] Переключение на Gofile.io...")
-    try:
-        server_res = requests.get("https://api.gofile.io/servers", timeout=30).json()
-        if server_res.get("status") == "ok":
-            server = server_res["data"]["servers"][0]["name"]
-            upload_url = f"https://{server}.gofile.io/contents/uploadfile"
-            
-            with open(file_path, 'rb') as f:
-                files = {'file': f}
-                res = requests.post(upload_url, files=files, timeout=600)
-                res.raise_for_status()
-                
-                result = res.json()
-                if result.get("status") == "ok":
-                    files_data = result["data"].get("files", {})
-                    if files_data:
-                        first_file_key = list(files_data.keys())[0]
-                        direct_link = files_data[first_file_key].get("link")
-                        if direct_link:
-                            print(f"[+] Прямая ссылка Gofile: {direct_link}")
-                            return direct_link
-
-                    download_page = result["data"]["downloadPage"]
-                    print(f"[+] Выгружено на Gofile (страница): {download_page}")
-                    return download_page
-    except Exception as e:
-        print(f"[-] Не удалось выгрузить на Gofile: {e}")
 
     return None
 
