@@ -8,11 +8,11 @@ import time
 import subprocess
 import requests
 
-# Почта для чтения incoming писем (IMAP)
+# Почта для чтения входящих писем (IMAP)
 IMAP_USER = os.getenv("EMAIL_ACCOUNT")
 IMAP_PASS = os.getenv("EMAIL_PASSWORD")
 
-# Почта для отправки ответных писем (SMTP) — если не задана, берем IMAP аккаунт
+# Почта для отправки ответных писем (SMTP) — если не задана отдельно, берем IMAP аккаунт
 SMTP_USER = os.getenv("SENDER_EMAIL_ACCOUNT", IMAP_USER)
 SMTP_PASS = os.getenv("SENDER_EMAIL_PASSWORD", IMAP_PASS)
 
@@ -130,9 +130,9 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> bool:
     return False
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на Catbox.moe (до 200MB), а если не вышло — на Gofile.io."""
+    """Загружает файл на Catbox.moe, а при сбое — на Gofile.io (с извлечением прямой ссылки)."""
     
-    # 1. Пробуем Catbox.moe
+    # 1. Пробуем Catbox.moe (Прямая ссылка)
     print("[*] Загрузка файла на Catbox.moe...")
     try:
         with open(file_path, 'rb') as f:
@@ -148,7 +148,7 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Catbox: {e}")
 
-    # 2. Фолбэк на Gofile.io
+    # 2. Фолбэк на Gofile.io (Прямая ссылка на файл)
     print("[*] Переключение на Gofile.io...")
     try:
         server_res = requests.get("https://api.gofile.io/servers", timeout=30).json()
@@ -163,8 +163,18 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
                 
                 result = res.json()
                 if result.get("status") == "ok":
+                    # Достаем прямую ссылку на файл для Яндекс.Диска
+                    files_data = result["data"].get("files", {})
+                    if files_data:
+                        first_file_key = list(files_data.keys())[0]
+                        direct_link = files_data[first_file_key].get("link")
+                        if direct_link:
+                            print(f"[+] Прямая ссылка Gofile: {direct_link}")
+                            return direct_link
+
+                    # Если не вышло получить прямую — возвращаем ссылку на страницу
                     download_page = result["data"]["downloadPage"]
-                    print(f"[+] Файл успешно выгружен на Gofile: {download_page}")
+                    print(f"[+] Выгружено на Gofile (страница): {download_page}")
                     return download_page
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Gofile: {e}")
@@ -196,7 +206,6 @@ if __name__ == "__main__":
         exit(0)
 
     for task in email_tasks:
-        # Если задан TARGET_NOTIFICATION_EMAIL, отправляем туда, иначе — автору письма
         recipient = TARGET_EMAIL if TARGET_EMAIL else task["sender"]
         links = task["links"]
         
