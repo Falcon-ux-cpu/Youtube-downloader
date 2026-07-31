@@ -7,6 +7,7 @@ import re
 import time
 import subprocess
 import requests
+from urllib.parse import urlparse, urlunparse
 
 # Переменные окружения
 IMAP_USER = os.getenv("EMAIL_ACCOUNT")
@@ -96,13 +97,18 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Скачивает видео strictly в 1080p/HD без скатывания в 360p."""
+    """Скачивает видео с защитой от блокировок и гибким выбором формата."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    # tv_embedded первой, так как обходит синтаксические требования авторизации ботов
-    client_strategies = ["tv_embedded", "ios", None]
+    # Расширенный список клиентских стратегий для обхода блокировок ботов
+    client_strategies = [
+        "web_creator,android",
+        "ios,mweb",
+        "tv_embedded",
+        None
+    ]
 
     for attempt, client_group in enumerate(client_strategies, 1):
         print(f"[*] Попытка {attempt}/{len(client_strategies)} (Стратегия: {client_group or 'Auto'})...")
@@ -117,7 +123,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
             "yt-dlp",
             "--no-warnings",
             "--no-part",
-            "-f", "bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio",
+            "-f", "bv*[height<=1080]+ba/b[height<=1080]/best",
             "--merge-output-format", "mp4",
             "-o", output_filename,
             video_url
@@ -164,9 +170,9 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл и принудительно разворачивает все 301/302 редиректы до физического CDN URL."""
+    """Загружает файл и формирует точный скачиваемый URL с вставкой /dl/."""
     
-    # 1. Основной вариант: Tmpfiles.org с разворачиванием редиректов на раннере
+    # 1. Основной вариант: Tmpfiles.org
     print("[*] Загрузка файла на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
@@ -175,18 +181,18 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
             data = res.json()
             if data.get("status") == "success":
                 raw_url = data["data"]["url"]
-                dl_url = raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
                 
-                print(f"[*] Разворачиваем редиректы через GitHub Actions для: {dl_url}")
-                head_res = requests.head(dl_url, allow_redirects=True, timeout=20)
-                final_url = head_res.url
+                # Точное преобразование пути URL (вставляем /dl перед ID)
+                parsed = urlparse(raw_url)
+                new_path = "/dl" + parsed.path if not parsed.path.startswith("/dl/") else parsed.path
+                dl_url = urlunparse((parsed.scheme, parsed.netloc, new_path, parsed.params, parsed.query, parsed.fragment))
                 
-                print(f"[+] Финальная прямая ссылка CDN: {final_url}")
-                return final_url
+                print(f"[+] Прямая ссылка для скачивания Tmpfiles: {dl_url}")
+                return dl_url
     except Exception as e:
-        print(f"[-] Не удалось выгрузить или развернуть Tmpfiles: {e}")
+        print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
 
-    # 2. Резервный вариант: Pixeldrain с явным параметром прямого скачивания
+    # 2. Резервный вариант: Pixeldrain
     print("[*] Резервная загрузка на Pixeldrain...")
     try:
         with open(file_path, 'rb') as f:
@@ -294,11 +300,11 @@ if __name__ == "__main__":
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
-                    # 1. Загружаем и вычисляем конечную CDN-ссылку без редиректов
+                    # 1. Загружаем и точечно формируем прямую скачиваемую ссылку формата /dl/
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
-                        # 2. Передаем готовую прямую ссылку Яндекс.Диску и удерживаем раннер до конца загрузки
+                        # 2. Передаем готовую ссылку Яндекс.Диску
                         upload_url_to_yandex_disk(public_url, title)
                         
                         # 3. Отправляем уведомление
