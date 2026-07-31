@@ -304,7 +304,7 @@ if __name__ == "__main__":
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
-                    # 1. Загрузка во временное хранилище и вытаскивание прямой ссылки через regex
+                    # 1. Загрузка во временное хранилище и извлечение прямой ссылки из HTML через regex
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
