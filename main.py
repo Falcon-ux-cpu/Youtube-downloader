@@ -7,7 +7,6 @@ import re
 import time
 import subprocess
 import requests
-from bs4 import BeautifulSoup
 
 # Переменные окружения
 IMAP_USER = os.getenv("EMAIL_ACCOUNT")
@@ -102,7 +101,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    # Сначала пробуем iOS / TV клиенты, отдающие HD без авторизации
+    # iOS / TV клиенты отдают HD без блокировок ботов
     client_strategies = [
         "ios",
         "tv_embedded",
@@ -123,7 +122,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
             "yt-dlp",
             "--no-warnings",
             "--no-part",
-            # Строго требуем видео 720p/1080p
+            # Принудительно запрашиваем качество не ниже 720p
             "-f", "bestvideo[height<=1080][height>=720]+bestaudio/best[height>=720]/best",
             "--merge-output-format", "mp4",
             "-o", output_filename,
@@ -171,7 +170,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл и извлекает точную ссылку из HTML элемента <a class="download">."""
+    """Загружает файл и вытаскивает прямую ссылку из HTML блока тега <a class="download"> без использования bs4."""
     print("[*] Загрузка файла на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
@@ -182,26 +181,22 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
                 page_url = data["data"]["url"]
                 print(f"[*] Страница скачивания: {page_url}")
                 
-                # Парсим HTML страницы с помощью BeautifulSoup / Regex для поиска ссылки в <a class="download">
+                # Получаем HTML-код страницы
                 page_res = requests.get(page_url, timeout=30)
                 if page_res.status_code == 200:
-                    soup = BeautifulSoup(page_res.text, 'html.parser')
-                    download_btn = soup.find('a', class_='download')
-                    
-                    if download_btn and download_btn.get('href'):
-                        direct_url = download_btn['href']
-                        print(f"[+] Точная прямая ссылка из HTML: {direct_url}")
-                        return direct_url
-                    
-                    # Запасной Regex поиск href="https://tmpfiles.org/dl/..."
-                    match = re.search(r'href="(https://tmpfiles\.org/dl/[^"]+)"', page_res.text)
+                    # Ищем тег <a class="download" href="..."> через регулярное выражение
+                    match = re.search(r'<a\s+class="download"\s+href="(https://tmpfiles\.org/dl/[^"]+)"', page_res.text)
+                    if not match:
+                        # Запасной поиск любой href c /dl/
+                        match = re.search(r'href="(https://tmpfiles\.org/dl/[^"]+)"', page_res.text)
+
                     if match:
                         direct_url = match.group(1)
-                        print(f"[+] Ссылка найдена через regex: {direct_url}")
+                        print(f"[+] Прямая ссылка на файл из HTML: {direct_url}")
                         return direct_url
 
     except Exception as e:
-        print(f"[-] Ошибка парсинга ссылки Tmpfiles: {e}")
+        print(f"[-] Ошибка получения ссылки Tmpfiles: {e}")
 
     # 2. Резервный вариант: Pixeldrain
     print("[*] Резервная загрузка на Pixeldrain...")
@@ -237,7 +232,7 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         "path": save_path
     }
 
-    print(f"[*] Отправка запроса Яндекс.Диску по ссылке: {download_url}")
+    print(f"[*] Передача прямой ссылки Яндекс.Диску: {download_url}")
     try:
         res = requests.post("https://cloud-api.yandex.net/v1/disk/resources/upload", headers=headers, params=params, timeout=30)
         
@@ -253,7 +248,7 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
                     status = status_data.get("status")
                     
                     if status == "success":
-                        print(f"[+] УСПЕХ: Файл сохранен на Яндекс.Диск: '{save_path}'!")
+                        print(f"[+] УСПЕХ: Файл сохранен на Яндекс.Диск по пути '{save_path}'!")
                         return True
                     elif status == "failed":
                         print(f"[-] Ошибка: Яндекс.Диск не смог скачать файл по переданной ссылке.")
@@ -271,10 +266,10 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         print(f"[-] Ошибка обращения к API Яндекс.Диска: {e}")
         return False
 
-def send_reply_email(to_email: str, direct_link: str, video_title: str):
-    """Отправка уведомления по email."""
+def send_reply_email(to_email: str, video_title: str):
+    """Отправка уведомления об успешном сохранении на Яндекс.Диск."""
     try:
-        email_body = f"Видео '{video_title}' отправлено на скачивание в Яндекс.Диск.\nПрямая ссылка: {direct_link}"
+        email_body = f"Видео '{video_title}' успешно сохранено на ваш Яндекс.Диск (папка /Share)."
         
         msg = MIMEText(email_body, 'plain', 'utf-8')
         msg['Subject'] = 'yt -> Yandex.Disk'
@@ -309,15 +304,16 @@ if __name__ == "__main__":
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
-                    # 1. Извлекаем прямую ссылку прямо из HTML элемента <a class="download">
+                    # 1. Загрузка во временное хранилище и вытаскивание прямой ссылки через regex
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
-                        # 2. Передаем точную прямую ссылку Яндекс.Диску
-                        upload_url_to_yandex_disk(public_url, title)
+                        # 2. Передача ссылки на Яндекс.Диск
+                        yd_success = upload_url_to_yandex_disk(public_url, title)
                         
-                        # 3. Отправляем уведомление
-                        send_reply_email(recipient, public_url, title)
+                        # 3. Отправляем уведомление о сохранении на диск (без публичных ссылок)
+                        if yd_success:
+                            send_reply_email(recipient, title)
                         
                         if idx < len(links) - 1:
                             time.sleep(2)
