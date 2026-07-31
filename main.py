@@ -11,7 +11,7 @@ IMAP_USER = os.getenv("EMAIL_ACCOUNT")
 IMAP_PASS = os.getenv("EMAIL_PASSWORD")
 YANDEX_DISK_TOKEN = os.getenv("YANDEX_DISK_TOKEN")
 
-# Локальный эндпоинт PO Token Provider
+# Локальный сервис генерации PO Token
 POT_PROVIDER_URL = "http://127.0.0.1:4444/get_pot"
 
 def extract_youtube_urls(text: str) -> list[str]:
@@ -109,7 +109,7 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Скачивает видео: сочетает PO Token и повторные попытки с ротацией WARP."""
+    """Скачивает видео с помощью PO Token и с переподключением WARP при сбоях."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
@@ -156,7 +156,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на Tmpfiles.org (основной) или Pixeldrain (резервный)."""
+    """Загружает файл на Tmpfiles.org или Pixeldrain."""
     print("[*] Загрузка файла на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
@@ -196,7 +196,7 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     return None
 
 def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
-    """Передает ссылку на фоновую загрузку в Яндекс.Диск."""
+    """Передает ссылку на загрузку в Яндекс.Диск."""
     if not YANDEX_DISK_TOKEN:
         print("[-] YANDEX_DISK_TOKEN не задан.")
         return False
