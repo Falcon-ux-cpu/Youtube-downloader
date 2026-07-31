@@ -101,7 +101,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    # tv_embedded ставим первой, так как она обходит требования авторизации ботов
+    # tv_embedded первой, так как обходит синтаксические требования авторизации ботов
     client_strategies = ["tv_embedded", "ios", None]
 
     for attempt, client_group in enumerate(client_strategies, 1):
@@ -164,8 +164,30 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл на Pixeldrain с принудительным параметром прямых скачиваний ?download."""
-    print("[*] Загрузка файла на Pixeldrain...")
+    """Загружает файл и принудительно разворачивает все 301/302 редиректы до физического CDN URL."""
+    
+    # 1. Основной вариант: Tmpfiles.org с разворачиванием редиректов на раннере
+    print("[*] Загрузка файла на Tmpfiles.org...")
+    try:
+        with open(file_path, 'rb') as f:
+            res = requests.post("https://tmpfiles.org/api/v1/upload", files={'file': f}, timeout=600)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("status") == "success":
+                raw_url = data["data"]["url"]
+                dl_url = raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                
+                print(f"[*] Разворачиваем редиректы через GitHub Actions для: {dl_url}")
+                head_res = requests.head(dl_url, allow_redirects=True, timeout=20)
+                final_url = head_res.url
+                
+                print(f"[+] Финальная прямая ссылка CDN: {final_url}")
+                return final_url
+    except Exception as e:
+        print(f"[-] Не удалось выгрузить или развернуть Tmpfiles: {e}")
+
+    # 2. Резервный вариант: Pixeldrain с явным параметром прямого скачивания
+    print("[*] Резервная загрузка на Pixeldrain...")
     try:
         with open(file_path, 'rb') as f:
             res = requests.post("https://pixeldrain.com/api/file", files={'file': f}, timeout=600)
@@ -179,25 +201,10 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
     except Exception as e:
         print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
 
-    # Резервная загрузка на Tmpfiles.org
-    print("[*] Резервная загрузка на Tmpfiles.org...")
-    try:
-        with open(file_path, 'rb') as f:
-            res = requests.post("https://tmpfiles.org/api/v1/upload", files={'file': f}, timeout=600)
-            res.raise_for_status()
-            data = res.json()
-            if data.get("status") == "success":
-                url = data["data"]["url"]
-                direct_url = url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                print(f"[+] Прямая ссылка Tmpfiles: {direct_url}")
-                return direct_url
-    except Exception as e:
-        print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
-
     return None
 
 def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
-    """Отправляет запрос Яндекс.Диску и ОЖИДАЕТ полного завершения скачивания серверами Яндекса."""
+    """Отправляет команду Яндекс.Диску и ОЖИДАЕТ полного завершения скачивания серверами Яндекса."""
     if not YANDEX_DISK_TOKEN:
         print("[-] YANDEX_DISK_TOKEN не задан. Загрузка на Яндекс.Диск пропущена.")
         return False
@@ -250,7 +257,7 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         return False
 
 def send_reply_email(to_email: str, direct_link: str, video_title: str):
-    """Отправка отчета по email."""
+    """Отправка уведомления по email."""
     try:
         email_body = f"Видео '{video_title}' отправлено на скачивание в Яндекс.Диск.\nПрямая ссылка: {direct_link}"
         
@@ -287,14 +294,14 @@ if __name__ == "__main__":
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
-                    # 1. Загружаем на Pixeldrain для получения прямой бинарной ссылки
+                    # 1. Загружаем и вычисляем конечную CDN-ссылку без редиректов
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
-                        # 2. Передаем ссылку Яндекс.Диску и ждем 100% окончания загрузки
+                        # 2. Передаем готовую прямую ссылку Яндекс.Диску и удерживаем раннер до конца загрузки
                         upload_url_to_yandex_disk(public_url, title)
                         
-                        # 3. Отправляем уведомление по почте
+                        # 3. Отправляем уведомление
                         send_reply_email(recipient, public_url, title)
                         
                         if idx < len(links) - 1:
