@@ -1,8 +1,6 @@
 import os
 import imaplib
-import smtplib
 import email
-from email.mime.text import MIMEText
 import re
 import time
 import subprocess
@@ -11,13 +9,7 @@ import requests
 # Переменные окружения
 IMAP_USER = os.getenv("EMAIL_ACCOUNT")
 IMAP_PASS = os.getenv("EMAIL_PASSWORD")
-SMTP_USER = os.getenv("SENDER_EMAIL_ACCOUNT", IMAP_USER)
-SMTP_PASS = os.getenv("SENDER_EMAIL_PASSWORD", IMAP_PASS)
-TARGET_EMAIL = os.getenv("TARGET_NOTIFICATION_EMAIL")
 YANDEX_DISK_TOKEN = os.getenv("YANDEX_DISK_TOKEN")
-
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 465
 
 def extract_youtube_urls(text: str) -> list[str]:
     """Ищет все уникальные ссылки на YouTube в тексте письма."""
@@ -225,7 +217,7 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         "Authorization": f"OAuth {YANDEX_DISK_TOKEN}"
     }
 
-    save_path = f"disk:/Share/{video_title}.mp4"
+    save_path = f"disk:/HTPC/Видео/{video_title}.mp4"
 
     params = {
         "url": download_url,
@@ -266,24 +258,6 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         print(f"[-] Ошибка обращения к API Яндекс.Диска: {e}")
         return False
 
-def send_reply_email(to_email: str, video_title: str):
-    """Отправка уведомления об успешном сохранении на Яндекс.Диск."""
-    try:
-        email_body = f"Видео '{video_title}' успешно сохранено на ваш Яндекс.Диск (папка /Share)."
-        
-        msg = MIMEText(email_body, 'plain', 'utf-8')
-        msg['Subject'] = 'yt -> Yandex.Disk'
-        msg['From'] = SMTP_USER
-        msg['To'] = to_email
-
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, [to_email], msg.as_string())
-            
-        print(f"[+] Уведомление отправлено на {to_email}")
-    except Exception as e:
-        print(f"[-] Ошибка отправки по SMTP: {e}")
-
 if __name__ == "__main__":
     print("[*] Поиск писем в ярлыке 'yt'...")
     email_tasks = get_emails_from_label(label_name="yt")
@@ -293,10 +267,8 @@ if __name__ == "__main__":
         exit(0)
 
     for task in email_tasks:
-        recipient = TARGET_EMAIL if TARGET_EMAIL else task["sender"]
         links = task["links"]
-        
-        print(f"\n[+] Обработка {len(links)} ссылок. Получатель: {recipient}...")
+        print(f"\n[+] Найдено ссылок: {len(links)}...")
 
         for idx, yt_url in enumerate(links):
             temp_filename = f"video_{int(time.time())}_{idx}.mp4"
@@ -304,16 +276,12 @@ if __name__ == "__main__":
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
-                    # 1. Загрузка во временное хранилище и извлечение прямой ссылки из HTML через regex
+                    # 1. Загрузка во временное хранилище и вытаскивание ссылки
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
                         # 2. Передача ссылки на Яндекс.Диск
-                        yd_success = upload_url_to_yandex_disk(public_url, title)
-                        
-                        # 3. Отправляем уведомление о сохранении на диск (без публичных ссылок)
-                        if yd_success:
-                            send_reply_email(recipient, title)
+                        upload_url_to_yandex_disk(public_url, title)
                         
                         if idx < len(links) - 1:
                             time.sleep(2)
