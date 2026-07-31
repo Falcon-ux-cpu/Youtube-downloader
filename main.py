@@ -7,7 +7,7 @@ import re
 import time
 import subprocess
 import requests
-from urllib.parse import urlparse, urlunparse
+from bs4 import BeautifulSoup
 
 # Переменные окружения
 IMAP_USER = os.getenv("EMAIL_ACCOUNT")
@@ -15,7 +15,7 @@ IMAP_PASS = os.getenv("EMAIL_PASSWORD")
 SMTP_USER = os.getenv("SENDER_EMAIL_ACCOUNT", IMAP_USER)
 SMTP_PASS = os.getenv("SENDER_EMAIL_PASSWORD", IMAP_PASS)
 TARGET_EMAIL = os.getenv("TARGET_NOTIFICATION_EMAIL")
-YANDEX_DISK_TOKEN = os.getenv("YANDEX_DISK_TOKEN")  # Токен Яндекс.Диска
+YANDEX_DISK_TOKEN = os.getenv("YANDEX_DISK_TOKEN")
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
@@ -97,16 +97,16 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Скачивает видео с защитой от блокировок и гибким выбором формата."""
+    """Скачивает видео с защитой от скатывания в 360p."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
     
-    # Расширенный список клиентских стратегий для обхода блокировок ботов
+    # Сначала пробуем iOS / TV клиенты, отдающие HD без авторизации
     client_strategies = [
-        "web_creator,android",
-        "ios,mweb",
+        "ios",
         "tv_embedded",
+        "web_creator",
         None
     ]
 
@@ -123,7 +123,8 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
             "yt-dlp",
             "--no-warnings",
             "--no-part",
-            "-f", "bv*[height<=1080]+ba/b[height<=1080]/best",
+            # Строго требуем видео 720p/1080p
+            "-f", "bestvideo[height<=1080][height>=720]+bestaudio/best[height>=720]/best",
             "--merge-output-format", "mp4",
             "-o", output_filename,
             video_url
@@ -143,7 +144,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
                 file_size_mb = os.path.getsize(output_filename) / (1024 * 1024)
                 
                 if file_size_mb < 2.0:
-                    print(f"[-] Файл слишком мал ({file_size_mb:.2f} МБ). Это не полноценное видео.")
+                    print(f"[-] Файл слишком мал ({file_size_mb:.2f} МБ).")
                     os.remove(output_filename)
                     raise Exception("Файл меньше 2 МБ.")
 
@@ -170,9 +171,7 @@ def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[boo
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл и формирует точный скачиваемый URL с вставкой /dl/."""
-    
-    # 1. Основной вариант: Tmpfiles.org
+    """Загружает файл и извлекает точную ссылку из HTML элемента <a class="download">."""
     print("[*] Загрузка файла на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
@@ -180,17 +179,29 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
             res.raise_for_status()
             data = res.json()
             if data.get("status") == "success":
-                raw_url = data["data"]["url"]
+                page_url = data["data"]["url"]
+                print(f"[*] Страница скачивания: {page_url}")
                 
-                # Точное преобразование пути URL (вставляем /dl перед ID)
-                parsed = urlparse(raw_url)
-                new_path = "/dl" + parsed.path if not parsed.path.startswith("/dl/") else parsed.path
-                dl_url = urlunparse((parsed.scheme, parsed.netloc, new_path, parsed.params, parsed.query, parsed.fragment))
-                
-                print(f"[+] Прямая ссылка для скачивания Tmpfiles: {dl_url}")
-                return dl_url
+                # Парсим HTML страницы с помощью BeautifulSoup / Regex для поиска ссылки в <a class="download">
+                page_res = requests.get(page_url, timeout=30)
+                if page_res.status_code == 200:
+                    soup = BeautifulSoup(page_res.text, 'html.parser')
+                    download_btn = soup.find('a', class_='download')
+                    
+                    if download_btn and download_btn.get('href'):
+                        direct_url = download_btn['href']
+                        print(f"[+] Точная прямая ссылка из HTML: {direct_url}")
+                        return direct_url
+                    
+                    # Запасной Regex поиск href="https://tmpfiles.org/dl/..."
+                    match = re.search(r'href="(https://tmpfiles\.org/dl/[^"]+)"', page_res.text)
+                    if match:
+                        direct_url = match.group(1)
+                        print(f"[+] Ссылка найдена через regex: {direct_url}")
+                        return direct_url
+
     except Exception as e:
-        print(f"[-] Не удалось выгрузить на Tmpfiles: {e}")
+        print(f"[-] Ошибка парсинга ссылки Tmpfiles: {e}")
 
     # 2. Резервный вариант: Pixeldrain
     print("[*] Резервная загрузка на Pixeldrain...")
@@ -219,7 +230,6 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         "Authorization": f"OAuth {YANDEX_DISK_TOKEN}"
     }
 
-    # Целевой путь на Яндекс.Диске
     save_path = f"disk:/Share/{video_title}.mp4"
 
     params = {
@@ -227,15 +237,14 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
         "path": save_path
     }
 
-    print(f"[*] Отправка запроса Яндекс.Диску на фоновое скачивание по URL...")
+    print(f"[*] Отправка запроса Яндекс.Диску по ссылке: {download_url}")
     try:
         res = requests.post("https://cloud-api.yandex.net/v1/disk/resources/upload", headers=headers, params=params, timeout=30)
         
         if res.status_code == 202:
             status_url = res.json().get("href")
-            print(f"[+] Яндекс.Диск принял задачу! Ожидаем завершения скачивания серверами Яндекса...")
+            print(f"[+] Яндекс.Диск принял задачу! Ожидаем завершения скачивания...")
             
-            # Цикл отслеживания статуса (до 10 минут)
             for _ in range(120):
                 time.sleep(5)
                 check_res = requests.get(status_url, headers=headers, timeout=10)
@@ -244,7 +253,7 @@ def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
                     status = status_data.get("status")
                     
                     if status == "success":
-                        print(f"[+] УСПЕХ: Файл полностью сохранен на Яндекс.Диск по пути '{save_path}'!")
+                        print(f"[+] УСПЕХ: Файл сохранен на Яндекс.Диск: '{save_path}'!")
                         return True
                     elif status == "failed":
                         print(f"[-] Ошибка: Яндекс.Диск не смог скачать файл по переданной ссылке.")
@@ -300,11 +309,11 @@ if __name__ == "__main__":
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
-                    # 1. Загружаем и точечно формируем прямую скачиваемую ссылку формата /dl/
+                    # 1. Извлекаем прямую ссылку прямо из HTML элемента <a class="download">
                     public_url = upload_to_temporary_storage(temp_filename)
                     
                     if public_url:
-                        # 2. Передаем готовую ссылку Яндекс.Диску
+                        # 2. Передаем точную прямую ссылку Яндекс.Диску
                         upload_url_to_yandex_disk(public_url, title)
                         
                         # 3. Отправляем уведомление
