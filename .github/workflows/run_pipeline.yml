@@ -20,9 +20,8 @@ jobs:
       # --- Запуск PO Token Provider (Docker) ---
       - name: Run PO Token Provider
         run: |
-          docker run -d -p 4444:4444 --name pot-provider brainsteam/bgutil-ytdlp-pot-provider:latest
+          docker run -d -p 4444:4444 --name pot-provider bgutil/pot-provider:latest
           sleep 5  # Пауза для инициализации сервиса
-      # ----------------------------------------
 
       - name: Install latest yt-dlp & ffmpeg
         run: |
