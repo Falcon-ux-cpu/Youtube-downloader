@@ -17,11 +17,12 @@ jobs:
         with:
           python-version: '3.12'
 
-      # --- Запуск PO Token Provider (Docker) ---
+      # --- Запуск PO Token Provider (Docker из GHCR) ---
       - name: Run PO Token Provider
         run: |
-          docker run -d -p 4444:4444 --name pot-provider bgutil/pot-provider:latest
-          sleep 5  # Пауза для инициализации сервиса
+          docker run -d -p 4444:4444 --name pot-provider ghcr.io/brainsteam/bgutil-ytdlp-pot-provider:latest || \
+          docker run -d -p 4444:4444 --name pot-provider ghcr.io/bally2/bgutil-ytdlp-pot-provider:latest
+          sleep 5
 
       - name: Install latest yt-dlp & ffmpeg
         run: |
