@@ -6,15 +6,29 @@ import time
 import subprocess
 import requests
 
-# Переменные окружения
+# Переменные окружения из GitHub Secrets
 IMAP_USER = os.getenv("EMAIL_ACCOUNT")
 IMAP_PASS = os.getenv("EMAIL_PASSWORD")
 YANDEX_DISK_TOKEN = os.getenv("YANDEX_DISK_TOKEN")
+
+# Локальный эндпоинт PO Token Provider
+POT_PROVIDER_URL = "http://127.0.0.1:4444/get_pot"
 
 def extract_youtube_urls(text: str) -> list[str]:
     """Ищет все уникальные ссылки на YouTube в тексте письма."""
     pattern = r"(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)[0-9A-Za-z_-]{11})"
     return list(set(re.findall(pattern, text)))
+
+def rotate_warp_ip():
+    """Переподключает Cloudflare WARP для смены внешнего IP."""
+    print("[!] Ротация IP через Cloudflare WARP...")
+    try:
+        subprocess.run(["warp-cli", "--accept-tos", "disconnect"], capture_output=True)
+        time.sleep(2)
+        subprocess.run(["warp-cli", "--accept-tos", "connect"], capture_output=True)
+        time.sleep(4)
+    except Exception as e:
+        print(f"[-] Ошибка при переподключении WARP: {e}")
 
 def get_emails_from_label(label_name="yt") -> list[dict]:
     """Проверяет непрочитанные письма в ярлыке 'yt' через IMAP."""
@@ -77,8 +91,15 @@ def get_emails_from_label(label_name="yt") -> list[dict]:
     return tasks
 
 def get_video_title(video_url: str) -> str:
-    """Получает оригинальное название видео с YouTube."""
-    cmd = ["yt-dlp", "--get-title", "--no-warnings", video_url]
+    """Получает название видео через yt-dlp с использованием PO Token."""
+    cmd = [
+        "yt-dlp",
+        "--get-title",
+        "--no-warnings",
+        "--extractor-args", f"youtube:po_token=web+{POT_PROVIDER_URL}",
+        video_url
+    ]
+
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=True)
         title = res.stdout.strip()
@@ -88,99 +109,54 @@ def get_video_title(video_url: str) -> str:
         return "video"
 
 def download_via_ytdlp(video_url: str, output_filename="video.mp4") -> tuple[bool, str]:
-    """Скачивает видео последовательно проверяя разрешения 1080p -> 720p -> 480p -> любое."""
+    """Скачивает видео: сочетает PO Token и повторные попытки с ротацией WARP."""
     video_title = get_video_title(video_url)
     print(f"[*] Название видео: '{video_title}'")
     print(f"[*] Скачивание через yt-dlp для: {video_url}")
-    
-    # Каскад запросов качества: 1080p, 720p, 480p, затем Fallback на любое доступное
-    quality_levels = [
-        ("1080p", "bestvideo[height<=1080][height>=1080]+bestaudio/best[height=1080]"),
-        ("720p", "bestvideo[height<=720][height>=720]+bestaudio/best[height=720]"),
-        ("480p", "bestvideo[height<=480][height>=480]+bestaudio/best[height=480]"),
-        ("Any (Auto)", "bestvideo+bestaudio/best")
+
+    cmd = [
+        "yt-dlp",
+        "--no-warnings",
+        "--no-part",
+        "--extractor-args", f"youtube:po_token=web+{POT_PROVIDER_URL}",
+        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "--merge-output-format", "mp4",
+        "-o", output_filename,
+        video_url
     ]
 
-    # Набор клиентов для обхода блокировок "Sign in to confirm you're not a bot"
-    client_strategies = [
-        "ios,android",
-        "mweb,web",
-        "tv_embedded",
-        "web_creator",
-        None
-    ]
-
-    for q_name, format_option in quality_levels:
-        print(f"\n[=== Пробуем качество: {q_name} ===]")
-
-        for attempt, client_group in enumerate(client_strategies, 1):
-            print(f"[*] Попытка {attempt}/{len(client_strategies)} (Качество: {q_name} | Клиент: {client_group or 'Auto'})...")
-            
-            if os.path.exists(output_filename):
-                try:
-                    os.remove(output_filename)
-                except Exception:
-                    pass
-
-            cmd = [
-                "yt-dlp",
-                "--no-warnings",
-                "--no-part",
-                "-f", format_option,
-                "--merge-output-format", "mp4",
-                "-o", output_filename,
-                video_url
-            ]
-
-            if client_group:
-                cmd.extend(["--extractor-args", f"youtube:player_client={client_group}"])
-
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        if os.path.exists(output_filename):
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    err_msg = result.stderr.strip()[:200]
-                    print(f"[-] yt-dlp вернул ошибку: {err_msg}")
-                    
-                    # Если формата нет, сразу переходим к следующему качеству без перебора остальных клиентов
-                    if "Requested format is not available" in result.stderr:
-                        print(f"[-] Формат {q_name} отсутствует для этого видео. Переходим к следующему качеству...")
-                        break
-                        
-                    raise Exception("yt-dlp завершился с ошибкой.")
+                os.remove(output_filename)
+            except Exception:
+                pass
 
-                if os.path.exists(output_filename):
-                    file_size_mb = os.path.getsize(output_filename) / (1024 * 1024)
-                    
-                    if file_size_mb < 0.5:
-                        print(f"[-] Файл слишком мал ({file_size_mb:.2f} МБ).")
-                        os.remove(output_filename)
-                        raise Exception("Файл меньше 0.5 МБ.")
-
-                    print(f"[+] УСПЕХ! Видео скачано в качестве {q_name}! Размер: {file_size_mb:.2f} МБ")
+        print(f"[*] Попытка {attempt}/{max_retries}...")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0 and os.path.exists(output_filename):
+                file_size_mb = os.path.getsize(output_filename) / (1024 * 1024)
+                if file_size_mb >= 0.5:
+                    print(f"[+] УСПЕХ! Видео скачано! Размер: {file_size_mb:.2f} МБ")
                     return True, video_title
+                else:
+                    print(f"[-] Файл слишком мал ({file_size_mb:.2f} МБ). Повтор...")
 
-            except Exception as e:
-                print(f"[-] Сбой на попытке {attempt}: {e}")
-                if os.path.exists(output_filename):
-                    try:
-                        os.remove(output_filename)
-                    except Exception:
-                        pass
+            print(f"[-] yt-dlp вернул ошибку: {result.stderr.strip()[:200]}")
+            
+        except Exception as e:
+            print(f"[-] Ошибка выполнения yt-dlp: {e}")
 
-                print("[!] Ротация IP через Cloudflare WARP...")
-                try:
-                    subprocess.run(["warp-cli", "--accept-tos", "registration", "delete"], capture_output=True)
-                    subprocess.run(["warp-cli", "--accept-tos", "registration", "new"], check=True, capture_output=True)
-                    subprocess.run(["warp-cli", "--accept-tos", "connect"], check=True, capture_output=True)
-                    time.sleep(3)
-                except Exception as warp_err:
-                    print(f"[-] Ошибка WARP: {warp_err}")
+        if attempt < max_retries:
+            rotate_warp_ip()
 
     return False, video_title
 
 def upload_to_temporary_storage(file_path: str) -> str | None:
-    """Загружает файл и вытаскивает прямую ссылку из HTML блока тега <a class="download"> без использования bs4."""
+    """Загружает файл на Tmpfiles.org (основной) или Pixeldrain (резервный)."""
     print("[*] Загрузка файла на Tmpfiles.org...")
     try:
         with open(file_path, 'rb') as f:
@@ -189,26 +165,20 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
             data = res.json()
             if data.get("status") == "success":
                 page_url = data["data"]["url"]
-                print(f"[*] Страница скачивания: {page_url}")
                 
-                # Получаем HTML-код страницы
                 page_res = requests.get(page_url, timeout=30)
                 if page_res.status_code == 200:
-                    # Ищем тег <a class="download" href="..."> через регулярное выражение
                     match = re.search(r'<a\s+class="download"\s+href="(https://tmpfiles\.org/dl/[^"]+)"', page_res.text)
                     if not match:
-                        # Запасной поиск любой href c /dl/
                         match = re.search(r'href="(https://tmpfiles\.org/dl/[^"]+)"', page_res.text)
 
                     if match:
                         direct_url = match.group(1)
-                        print(f"[+] Прямая ссылка на файл из HTML: {direct_url}")
+                        print(f"[+] Прямая ссылка Tmpfiles: {direct_url}")
                         return direct_url
-
     except Exception as e:
-        print(f"[-] Ошибка получения ссылки Tmpfiles: {e}")
+        print(f"[-] Ошибка Tmpfiles: {e}")
 
-    # 2. Резервный вариант: Pixeldrain
     print("[*] Резервная загрузка на Pixeldrain...")
     try:
         with open(file_path, 'rb') as f:
@@ -221,59 +191,43 @@ def upload_to_temporary_storage(file_path: str) -> str | None:
                 print(f"[+] Прямая ссылка Pixeldrain: {direct_url}")
                 return direct_url
     except Exception as e:
-        print(f"[-] Не удалось выгрузить на Pixeldrain: {e}")
+        print(f"[-] Ошибка Pixeldrain: {e}")
 
     return None
 
 def upload_url_to_yandex_disk(download_url: str, video_title: str) -> bool:
-    """Отправляет команду Яндекс.Диску и ОЖИДАЕТ полного завершения скачивания серверами Яндекса."""
+    """Передает ссылку на фоновую загрузку в Яндекс.Диск."""
     if not YANDEX_DISK_TOKEN:
-        print("[-] YANDEX_DISK_TOKEN не задан. Загрузка на Яндекс.Диск пропущена.")
+        print("[-] YANDEX_DISK_TOKEN не задан.")
         return False
 
-    headers = {
-        "Authorization": f"OAuth {YANDEX_DISK_TOKEN}"
-    }
-
+    headers = {"Authorization": f"OAuth {YANDEX_DISK_TOKEN}"}
     save_path = f"disk:/Share/{video_title}.mp4"
+    params = {"url": download_url, "path": save_path}
 
-    params = {
-        "url": download_url,
-        "path": save_path
-    }
-
-    print(f"[*] Передача прямой ссылки Яндекс.Диску: {download_url}")
     try:
         res = requests.post("https://cloud-api.yandex.net/v1/disk/resources/upload", headers=headers, params=params, timeout=30)
-        
         if res.status_code == 202:
             status_url = res.json().get("href")
-            print(f"[+] Яндекс.Диск принял задачу! Ожидаем завершения скачивания...")
+            print(f"[+] Задача отправлена на Яндекс.Диск. Ожидание завершения...")
             
             for _ in range(120):
                 time.sleep(5)
                 check_res = requests.get(status_url, headers=headers, timeout=10)
                 if check_res.status_code == 200:
-                    status_data = check_res.json()
-                    status = status_data.get("status")
-                    
+                    status = check_res.json().get("status")
                     if status == "success":
-                        print(f"[+] УСПЕХ: Файл сохранен на Яндекс.Диск по пути '{save_path}'!")
+                        print(f"[+] УСПЕХ: Загружено в '{save_path}'!")
                         return True
                     elif status == "failed":
-                        print(f"[-] Ошибка: Яндекс.Диск не смог скачать файл по переданной ссылке.")
+                        print("[-] Ошибка Яндекс.Диска при скачивании файла.")
                         return False
-                    else:
-                        print(f"[*] Скачивание Яндекс.Диском в процессе (статус: {status})...")
-            
-            print("[-] Превышено время ожидания загрузки на Яндекс.Диск.")
             return False
         else:
-            print(f"[-] Яндекс.Диск вернул ошибку ({res.status_code}): {res.text}")
+            print(f"[-] Яндекс.Диск вернул код {res.status_code}: {res.text}")
             return False
-            
     except Exception as e:
-        print(f"[-] Ошибка обращения к API Яндекс.Диска: {e}")
+        print(f"[-] Ошибка Яндекс.Диска: {e}")
         return False
 
 if __name__ == "__main__":
@@ -281,7 +235,7 @@ if __name__ == "__main__":
     email_tasks = get_emails_from_label(label_name="yt")
 
     if not email_tasks:
-        print("[-] Новых ссылок в ярлыке 'yt' нет.")
+        print("[-] Новых ссылок нет.")
         exit(0)
 
     for task in email_tasks:
@@ -290,22 +244,14 @@ if __name__ == "__main__":
 
         for idx, yt_url in enumerate(links):
             temp_filename = f"video_{int(time.time())}_{idx}.mp4"
-            
             try:
                 success, title = download_via_ytdlp(yt_url, temp_filename)
                 if success:
-                    # 1. Загрузка во временное хранилище и вытаскивание ссылки
                     public_url = upload_to_temporary_storage(temp_filename)
-                    
                     if public_url:
-                        # 2. Передача ссылки на Яндекс.Диск
                         upload_url_to_yandex_disk(public_url, title)
-                        
                         if idx < len(links) - 1:
                             time.sleep(2)
-                else:
-                    print(f"[-] Не удалось обработать ссылку: {yt_url}")
             finally:
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
-                    print(f"[+] Временный файл {temp_filename} удален из раннера.")
