@@ -1,5 +1,4 @@
-requests
-google-api-python-client
-google-auth
+Flask==3.0.3
+requests==2.32.3
 yt-dlp
-beautifulsoup4
+imap-tools==1.10.0
