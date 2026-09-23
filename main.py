@@ -1,25 +1,80 @@
 import os
 import re
+import base64
 import urllib.parse
 from flask import Flask, jsonify
-from imap_tools import MailBox, AND
 import requests
 import yt_dlp
 
 app = Flask(__name__)
 
 # Конфигурация из переменных окружения
-IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASS = os.getenv("EMAIL_PASS")
-SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-
 KOOFR_WEBDAV_URL = os.getenv("KOOFR_WEBDAV_URL", "https://app.koofr.net/dav/Koofr/")
 KOOFR_USER = os.getenv("KOOFR_USER")
 KOOFR_PASS = os.getenv("KOOFR_PASS")
 
+# Настройки GitHub для сохранения изменений в links.txt
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")      # Формат: "owner/repo"
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
+FILE_PATH_IN_REPO = "links.txt"
+
 DOWNLOAD_DIR = "/tmp/downloads"
+LINKS_FILE = os.path.join(os.path.dirname(__file__), "links.txt")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+
+def remove_line_from_github(line_to_remove):
+    """Удаляет обработанную строку из links.txt напрямую в репозитории GitHub."""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        print("[ВНИМАНИЕ] GITHUB_TOKEN или GITHUB_REPO не заданы. Пропуск обновления GitHub.")
+        return False
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH_IN_REPO}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    try:
+        # 1. Получаем текущее содержимое файла и sha
+        res = requests.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+        if res.status_code != 200:
+            print(f"[ОШИБКА GITHUB] Не удалось получить файл: {res.status_code} {res.text}")
+            return False
+
+        data = res.json()
+        sha = data["sha"]
+        content_bytes = base64.b64decode(data["content"])
+        content_text = content_bytes.decode('utf-8')
+
+        # 2. Фильтруем строки
+        lines = [line.strip() for line in content_text.splitlines() if line.strip()]
+        if line_to_remove in lines:
+            lines.remove(line_to_remove)
+
+        new_content = "\n".join(lines) + ("\n" if lines else "")
+        encoded_content = base64.b64encode(new_content.encode('utf-8')).decode('utf-8')
+
+        # 3. Отправляем обновленный файл обратно в GitHub
+        payload = {
+            "message": f"Auto-remove processed link: {line_to_remove[:30]}...",
+            "content": encoded_content,
+            "sha": sha,
+            "branch": GITHUB_BRANCH
+        }
+
+        put_res = requests.put(url, headers=headers, json=payload)
+        if put_res.status_code in (200, 201):
+            print(f"[УСПЕХ GITHUB] Ссылка удалена из links.txt в репозитории.")
+            return True
+        else:
+            print(f"[ОШИБКА GITHUB] Не удалось обновить файл: {put_res.status_code} {put_res.text}")
+            return False
+
+    except Exception as e:
+        print(f"[ОШИБКА GITHUB] {e}")
+        return False
 
 
 def upload_to_koofr(file_path, remote_filename):
@@ -45,89 +100,84 @@ def upload_to_koofr(file_path, remote_filename):
         return False
 
 
-def download_content(url, custom_name):
-    """Скачивание медиа по URL (поддерживает yt-dlp и прямые ссылки)."""
-    # Шаблон для yt-dlp, чтобы сохранилось оригинальное расширение
-    out_template = os.path.join(DOWNLOAD_DIR, f"{custom_name}.%(ext)s")
+def download_content(url, quality, remote_filename):
+    """Скачивание медиа по URL с учетом качества."""
+    filename = os.path.join(DOWNLOAD_DIR, remote_filename)
     
+    if quality.isdigit():
+        fmt = f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+    else:
+        fmt = "bestvideo+bestaudio/best"
+
     ydl_opts = {
-        'outtmpl': out_template,
+        'outtmpl': filename,
         'quiet': True,
         'no_warnings': True,
-        'format': 'bestvideo+bestaudio/best',
-        'merge_output_format': 'mp4'
+        'format': fmt,
+        'merge_output_format': 'mp4' if filename.endswith('.mp4') else None
     }
 
     try:
-        # Пробуем через yt-dlp (для видео-хостингов и медиа)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            # В случае merge_output_format расширение может измениться на mp4
-            if not os.path.exists(filename):
-                base, _ = os.path.splitext(filename)
-                if os.path.exists(base + ".mp4"):
-                    filename = base + ".mp4"
-            return filename
+            ydl.download([url])
+            if os.path.exists(filename):
+                return filename
+            base, _ = os.path.splitext(filename)
+            if os.path.exists(base + ".mp4"):
+                return base + ".mp4"
     except Exception as e:
         print(f"yt-dlp не справился ({e}), пробуем прямое скачивание...")
         
-        # Запасной вариант — прямое скачивание файла по HTTP
         res = requests.get(url, stream=True)
         res.raise_for_status()
         
-        # Пытаемся определить расширение из заголовка или URL
-        ext = ".bin"
-        content_disp = res.headers.get('content-disposition', '')
-        if 'filename=' in content_disp:
-            ext = os.path.splitext(re.findall('filename="?([^"]+)"?', content_disp)[0])[1]
-        else:
-            path_ext = os.path.splitext(urllib.parse.urlparse(url).path)[1]
-            if path_ext:
-                ext = path_ext
-
-        filename = os.path.join(DOWNLOAD_DIR, f"{custom_name}{ext}")
         with open(filename, 'wb') as f:
             for chunk in res.iter_content(chunk_size=8192):
                 f.write(chunk)
         return filename
 
+    return filename
 
-def process_emails():
-    """Основной цикл парсинга почты и обработки задач."""
+
+def process_links():
+    """Чтение файла links.txt, скачивание, отправка на Koofr и удаление ссылки из GitHub."""
+    if not os.path.exists(LINKS_FILE):
+        print(f"[ИНФО] Файл {LINKS_FILE} не найден.")
+        return 0
+
+    with open(LINKS_FILE, 'r', encoding='utf-8') as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    if not lines:
+        print("[ИНФО] Файл links.txt пуст.")
+        return 0
+
     processed_count = 0
-    
-    with MailBox(IMAP_SERVER).login(EMAIL_USER, EMAIL_PASS) as mb:
-        # Ищем непрочитанные письма от конкретного отправителя
-        messages = mb.fetch(AND(seen=False, from_=SENDER_EMAIL))
-        
-        for msg in messages:
-            body = msg.text.strip()
-            print(f"\nПолучено письмо ID {msg.uid}: {body}")
-            
-            # Парсинг: Ссылка + Пробел + Желаемое имя файла
-            parts = body.split(maxsplit=1)
-            if len(parts) < 2:
-                print("[ПРОПУСК] Формат тела письма не отвечает условию 'URL ИМЯ_ФАЙЛА'")
-                continue
-                
-            url, custom_name = parts[0].strip(), parts[1].strip()
-            
-            try:
-                # 1. Скачивание
-                local_file = download_content(url, custom_name)
-                
-                if local_file and os.path.exists(local_file):
-                    ext = os.path.splitext(local_file)[1]
-                    remote_name = f"{custom_name}{ext}"
+
+    for line in list(lines):
+        parts = line.split(maxsplit=2)
+        if len(parts) < 3:
+            print(f"[ПРОПУСК] Неверный формат строки: {line}")
+            continue
+
+        url, quality, remote_filename = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        print(f"\nОбработка: URL={url}, Качество={quality}, Имя={remote_filename}")
+
+        try:
+            # 1. Скачивание
+            local_file = download_content(url, quality, remote_filename)
+
+            if local_file and os.path.exists(local_file):
+                # 2. Загрузка на Koofr и удаление локального файла
+                actual_remote_name = os.path.basename(local_file)
+                if upload_to_koofr(local_file, actual_remote_name):
+                    processed_count += 1
                     
-                    # 2. Загрузка на Koofr и удаление
-                    if upload_to_koofr(local_file, remote_name):
-                        # Помечаем письмо как прочитанное только после успешной загрузки
-                        mb.flag(msg.uid, imap_tools.MailMessageFlags.SEEN, True)
-                        processed_count += 1
-            except Exception as err:
-                print(f"[ОШИБКА ОБРАБОТКИ] {err}")
+                    # 3. Удаляем обработанную строку напрямую из GitHub
+                    remove_line_from_github(line)
+
+        except Exception as err:
+            print(f"[ОШИБКА ОБРАБОТКИ] {err}")
 
     return processed_count
 
@@ -141,8 +191,8 @@ def index():
 def trigger():
     """Эндпоинт для внешнего вызова (cron)."""
     try:
-        count = process_emails()
-        return jsonify({"status": "success", "processed_emails": count}), 200
+        count = process_links()
+        return jsonify({"status": "success", "processed_files": count}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
