@@ -1,19 +1,21 @@
 import os
 import re
+import time
 import base64
 import urllib.parse
 from flask import Flask, jsonify
 import requests
 import yt_dlp
+from stem import Signal
+from stem.control import Controller
 
 app = Flask(__name__)
 
-# Конфигурация из переменных окружения
+# --- КОНФИГУРАЦИЯ ---
 KOOFR_WEBDAV_URL = os.getenv("KOOFR_WEBDAV_URL", "https://app.koofr.net/dav/Koofr/")
 KOOFR_USER = os.getenv("KOOFR_USER")
 KOOFR_PASS = os.getenv("KOOFR_PASS")
 
-# Настройки GitHub для сохранения изменений в links.txt
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")      # Формат: "owner/repo"
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
@@ -22,6 +24,34 @@ FILE_PATH_IN_REPO = "links.txt"
 DOWNLOAD_DIR = "/tmp/downloads"
 LINKS_FILE = os.path.join(os.path.dirname(__file__), "links.txt")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# --- НАСТРОЙКИ TOR PROXY ---
+TOR_SOCKS_PROXY = os.getenv("TOR_SOCKS_PROXY", "socks5h://127.0.0.1:9050")
+TOR_CONTROL_PORT = int(os.getenv("TOR_CONTROL_PORT", 9051))
+TOR_PASSWORD = os.getenv("TOR_PASSWORD", "password")
+
+PROXIES = {
+    'http': TOR_SOCKS_PROXY,
+    'https': TOR_SOCKS_PROXY
+}
+
+
+def renew_tor_ip():
+    """Отправляет сигнал NEWNYM в Tor Control Port для получения нового IP."""
+    try:
+        with Controller.from_port(port=TOR_CONTROL_PORT) as controller:
+            controller.authenticate(password=TOR_PASSWORD)
+            controller.signal(Signal.NEWNYM)
+            print("[TOR] Запрос на смену IP отправлен. Ожидание перестройки цепочки...")
+            time.sleep(5)  # Задержка для применения нового IP
+            
+            # Проверка текущего IP через Tor
+            res = requests.get("https://api.ipify.org?format=json", proxies=PROXIES, timeout=10)
+            print(f"[TOR] Новый внешний IP: {res.json().get('ip')}")
+            return True
+    except Exception as e:
+        print(f"[TOR ОШИБКА] Не удалось сменить IP через Tor: {e}")
+        return False
 
 
 def remove_line_from_github(line_to_remove):
@@ -38,7 +68,7 @@ def remove_line_from_github(line_to_remove):
 
     try:
         # 1. Получаем текущее содержимое файла и sha
-        res = requests.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+        res = requests.get(url, headers=headers, params={"ref": GITHUB_BRANCH}, timeout=15)
         if res.status_code != 200:
             print(f"[ОШИБКА GITHUB] Не удалось получить файл: {res.status_code} {res.text}")
             return False
@@ -64,9 +94,9 @@ def remove_line_from_github(line_to_remove):
             "branch": GITHUB_BRANCH
         }
 
-        put_res = requests.put(url, headers=headers, json=payload)
+        put_res = requests.put(url, headers=headers, json=payload, timeout=15)
         if put_res.status_code in (200, 201):
-            print(f"[УСПЕХ GITHUB] Ссылка удалена из links.txt в репозитории.")
+            print("[УСПЕХ GITHUB] Ссылка удалена из links.txt в репозитории.")
             return True
         else:
             print(f"[ОШИБКА GITHUB] Не удалось обновить файл: {put_res.status_code} {put_res.text}")
@@ -82,26 +112,32 @@ def upload_to_koofr(file_path, remote_filename):
     target_url = urllib.parse.urljoin(KOOFR_WEBDAV_URL, urllib.parse.quote(remote_filename))
     
     print(f"--> Загрузка {remote_filename} на Koofr...")
-    with open(file_path, 'rb') as f:
-        response = requests.put(
-            target_url,
-            auth=(KOOFR_USER, KOOFR_PASS),
-            data=f,
-            headers={'Content-Type': 'application/octet-stream'}
-        )
-    
-    if response.status_code in (200, 201, 204):
-        print(f"[УСПЕХ] Файл {remote_filename} загружен на Koofr.")
-        os.remove(file_path)
-        print(f"[ОЧИСТКА] Локальный файл {file_path} удален.")
-        return True
-    else:
-        print(f"[ОШИБКА] Koofr ответил кодом {response.status_code}: {response.text}")
+    try:
+        with open(file_path, 'rb') as f:
+            # Загрузку на Koofr выполняем напрямую (без Tor) для максимальной скорости
+            response = requests.put(
+                target_url,
+                auth=(KOOFR_USER, KOOFR_PASS),
+                data=f,
+                headers={'Content-Type': 'application/octet-stream'},
+                timeout=300
+            )
+        
+        if response.status_code in (200, 201, 204):
+            print(f"[УСПЕХ] Файл {remote_filename} загружен на Koofr.")
+            os.remove(file_path)
+            print(f"[ОЧИСТКА] Локальный файл {file_path} удален.")
+            return True
+        else:
+            print(f"[ОШИБКА] Koofr ответил кодом {response.status_code}: {response.text}")
+            return False
+    except Exception as e:
+        print(f"[ОШИБКА KOOFR] {e}")
         return False
 
 
 def download_content(url, quality, remote_filename):
-    """Скачивание медиа по URL с учетом качества."""
+    """Скачивание медиа по URL через Tor SOCKS5 прокси."""
     filename = os.path.join(DOWNLOAD_DIR, remote_filename)
     
     if quality.isdigit():
@@ -114,10 +150,12 @@ def download_content(url, quality, remote_filename):
         'quiet': True,
         'no_warnings': True,
         'format': fmt,
-        'merge_output_format': 'mp4' if filename.endswith('.mp4') else None
+        'merge_output_format': 'mp4' if filename.endswith('.mp4') else None,
+        'proxy': TOR_SOCKS_PROXY,  # Проксирование yt-dlp через Tor
     }
 
     try:
+        print(f"[DOWNLOAD] Скачивание через yt-dlp (Tor proxy: {TOR_SOCKS_PROXY})...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
             if os.path.exists(filename):
@@ -126,9 +164,10 @@ def download_content(url, quality, remote_filename):
             if os.path.exists(base + ".mp4"):
                 return base + ".mp4"
     except Exception as e:
-        print(f"yt-dlp не справился ({e}), пробуем прямое скачивание...")
+        print(f"yt-dlp не справился ({e}), пробуем прямое скачивание через Tor SOCKS5...")
         
-        res = requests.get(url, stream=True)
+        # Резервный фоллбек через requests + Tor
+        res = requests.get(url, stream=True, proxies=PROXIES, timeout=30)
         res.raise_for_status()
         
         with open(filename, 'wb') as f:
@@ -161,19 +200,23 @@ def process_links():
             continue
 
         url, quality, remote_filename = parts[0].strip(), parts[1].strip(), parts[2].strip()
-        print(f"\nОбработка: URL={url}, Качество={quality}, Имя={remote_filename}")
+        print(f"\n==========================================")
+        print(f"Обработка: URL={url}, Качество={quality}, Имя={remote_filename}")
+
+        # Сменяем IP перед каждой новой ссылкой
+        renew_tor_ip()
 
         try:
-            # 1. Скачивание
+            # 1. Скачивание через Tor
             local_file = download_content(url, quality, remote_filename)
 
             if local_file and os.path.exists(local_file):
-                # 2. Загрузка на Koofr и удаление локального файла
+                # 2. Загрузка на Koofr (напрямую) и удаление локального файла
                 actual_remote_name = os.path.basename(local_file)
                 if upload_to_koofr(local_file, actual_remote_name):
                     processed_count += 1
                     
-                    # 3. Удаляем обработанную строку напрямую из GitHub
+                    # 3. Удаляем обработанную строку из GitHub
                     remove_line_from_github(line)
 
         except Exception as err:
@@ -184,7 +227,7 @@ def process_links():
 
 @app.route("/")
 def index():
-    return "Worker is active", 200
+    return "Worker with Tor integration is active", 200
 
 
 @app.route("/trigger")
